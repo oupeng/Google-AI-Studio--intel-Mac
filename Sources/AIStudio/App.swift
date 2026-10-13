@@ -9,7 +9,7 @@ struct AIStudioApp: App {
     var body: some Scene {
         WindowGroup {
             LiquidGlassContainerView()
-                .frame(minWidth: 980, minHeight: 640)
+                .frame(minWidth: 1024, minHeight: 680)
         }
         .windowStyle(.hiddenTitleBar)
     }
@@ -21,7 +21,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         Self.applyLiquidGlassDockIcon()
         
-        // 采用 Swift 6 线程安全的异步通知监听，杜绝 self 捕获数据竞争
         DistributedNotificationCenter.default().addObserver(
             forName: NSNotification.Name("AppleInterfaceThemeChangedNotification"),
             object: nil,
@@ -33,13 +32,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // 静态主线程方法，无需跨线程发送 self
     static func applyLiquidGlassDockIcon() {
         let isDarkMode = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         NSApp.applicationIconImage = rendermacOS26Icon(isDark: isDarkMode)
     }
 
-    // 符合 macOS 26 规范的 Liquid Glass 矢量图标动态生成
     private static func rendermacOS26Icon(isDark: Bool) -> NSImage {
         let canvasSize = NSSize(width: 512, height: 512)
         let iconImage = NSImage(size: canvasSize)
@@ -53,7 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let baseRect = CGRect(x: 48, y: 48, width: 416, height: 416)
         let squirclePath = CGPath(roundedRect: baseRect, cornerWidth: 104, cornerHeight: 104, transform: nil)
 
-        // 1. 拟态背光漫反射阴影 (Ambient Occlusion)
+        // 1. 拟态背光漫反射阴影
         ctx.saveGState()
         let shadowColor = isDark ? NSColor.black.withAlphaComponent(0.45).cgColor : NSColor.black.withAlphaComponent(0.25).cgColor
         ctx.setShadow(offset: CGSize(width: 0, height: -16), blur: 36, color: shadowColor)
@@ -61,7 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ctx.fillPath()
         ctx.restoreGState()
 
-        // 2. 液体玻璃主体 (Liquid Glass Refraction Body)
+        // 2. 液体玻璃主体
         ctx.saveGState()
         ctx.addPath(squirclePath)
         ctx.clip()
@@ -79,7 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ctx.drawLinearGradient(glassGrad, start: CGPoint(x: 256, y: 464), end: CGPoint(x: 256, y: 48), options: [])
         }
 
-        // 3. 菲涅尔边缘高光环 (Fresnel Rim Highlight)
+        // 3. 菲涅尔边缘高光环
         let rimPath = CGPath(roundedRect: baseRect.insetBy(dx: 3, dy: 3), cornerWidth: 101, cornerHeight: 101, transform: nil)
         ctx.setLineWidth(2.5)
         let rimColor = isDark ? NSColor.white.withAlphaComponent(0.28).cgColor : NSColor.white.withAlphaComponent(0.85).cgColor
@@ -87,12 +84,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ctx.addPath(rimPath)
         ctx.strokePath()
 
-        // 4. Gemini 琉璃晶体徽标 (Prism Core)
+        // 4. Gemini 琉璃晶体徽标
         let center = CGPoint(x: 256, y: 256)
         let core = CGMutablePath()
         core.move(to: CGPoint(x: center.x, y: center.y + 115))
         core.addQuadCurve(to: CGPoint(x: center.x + 115, y: center.y), control: CGPoint(x: center.x + 16, y: center.y + 16))
-        core.addQuadCurve(to: CGPoint(x: center.x, y: center.y - 115), control: CGPoint(x: center.x + 16, y: center.y - 16))
+        core.addQuadCurve(to: CGPoint(x: center.x + 115, y: center.y), control: CGPoint(x: center.x + 16, y: center.y - 16))
         core.addQuadCurve(to: CGPoint(x: center.x - 115, y: center.y), control: CGPoint(x: center.x - 16, y: center.y - 16))
         core.addQuadCurve(to: CGPoint(x: center.x, y: center.y + 115), control: CGPoint(x: center.x - 16, y: center.y + 16))
 
@@ -116,7 +113,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-// MARK: - 主视图：macOS 26 Liquid Glass 悬浮输入舱
+// MARK: - 主容器视图
 struct LiquidGlassContainerView: View {
     @StateObject private var model = WebViewModel()
     @State private var inputText: String = ""
@@ -126,55 +123,59 @@ struct LiquidGlassContainerView: View {
             OptimizedWebView(model: model)
                 .ignoresSafeArea()
 
-            // 悬浮式 Liquid Glass 输入坞
-            HStack(alignment: .bottom, spacing: 10) {
-                NativeInputTextView(
-                    text: $inputText,
-                    onCommit: dispatchPrompt
-                )
-                .frame(minHeight: 38, maxHeight: 150)
-
-                Button(action: dispatchPrompt) {
-                    Image(systemName: "arrow.up")
-                        .font(.system(size: 14, weight: .black))
-                        .foregroundColor(.white)
-                        .frame(width: 34, height: 34)
-                        .background(
-                            Circle()
-                                .fill(LinearGradient(
-                                    colors: [Color.blue, Color.purple],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                ))
-                        )
-                }
-                .buttonStyle(.plain)
-                .disabled(inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .padding(.bottom, 2)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .strokeBorder(
-                        LinearGradient(
-                            colors: [
-                                Color.white.opacity(0.50),
-                                Color.white.opacity(0.12),
-                                Color.clear,
-                                Color.white.opacity(0.20)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 1
+            // 智能感知：进入实际工作区才浮出输入坞，登录页面自动隐退
+            if model.shouldShowInputBar {
+                HStack(alignment: .bottom, spacing: 10) {
+                    NativeInputTextView(
+                        text: $inputText,
+                        onCommit: dispatchPrompt
                     )
-            )
-            .shadow(color: Color.black.opacity(0.16), radius: 26, x: 0, y: 14)
-            .padding(.horizontal, 32)
-            .padding(.bottom, 22)
+                    .frame(minHeight: 38, maxHeight: 150)
+
+                    Button(action: dispatchPrompt) {
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 14, weight: .black))
+                            .foregroundColor(.white)
+                            .frame(width: 34, height: 34)
+                            .background(
+                                Circle()
+                                    .fill(LinearGradient(
+                                        colors: [Color.blue, Color.purple],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    ))
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .padding(.bottom, 2)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [
+                                    Color.white.opacity(0.50),
+                                    Color.white.opacity(0.12),
+                                    Color.clear,
+                                    Color.white.opacity(0.20)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 1
+                        )
+                )
+                .shadow(color: Color.black.opacity(0.16), radius: 26, x: 0, y: 14)
+                .padding(.horizontal, 32)
+                .padding(.bottom, 22)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
         }
+        .animation(.easeInOut(duration: 0.25), value: model.shouldShowInputBar)
     }
 
     private func dispatchPrompt() {
@@ -185,18 +186,24 @@ struct LiquidGlassContainerView: View {
     }
 }
 
-// MARK: - WebKit 调优层 (严格绑定 @MainActor，解决 Actor-Isolated 警告)
+// MARK: - WebKit 调优层（集成真实 Safari 27.0 UA 与导航委托）
 @MainActor
-final class WebViewModel: ObservableObject {
+final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     var webView: WKWebView!
+    @Published var shouldShowInputBar: Bool = false
 
-    init() {
+    override init() {
+        super.init()
         let config = WKWebViewConfiguration()
-        config.websiteDataStore = .default()
+        config.websiteDataStore = .default() // 持久化 Cookie 登录态
+        
+        // 允许自动打开 Google OAuth 弹窗
+        config.preferences.javaScriptCanOpenWindowsAutomatically = true
 
         let userContent = WKUserContentController()
         
-        let css = """
+        // 针对 Intel MacBook Pro 的 DOM 虚拟化加速补丁
+        let performanceCSS = """
         ms-prompt-node, .chat-turn, .history-container > * {
             content-visibility: auto !important;
             contain-intrinsic-size: 80px 200px;
@@ -206,19 +213,46 @@ final class WebViewModel: ObservableObject {
             autocorrect: off !important;
         }
         """
-        let script = WKUserScript(
-            source: "const s = document.createElement('style'); s.innerHTML = `\(css)`; document.head.appendChild(s);",
+        let cssScript = WKUserScript(
+            source: "const s = document.createElement('style'); s.innerHTML = `\(performanceCSS)`; document.head.appendChild(s);",
             injectionTime: .atDocumentEnd,
             forMainFrameOnly: false
         )
-        userContent.addUserScript(script)
+        userContent.addUserScript(cssScript)
         config.userContentController = userContent
-        config.applicationNameForUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
         self.webView = WKWebView(frame: .zero, configuration: config)
+        self.webView.navigationDelegate = self
+        self.webView.uiDelegate = self
+
+        // 核心突破点：精确注入你当前系统的完整 Safari 27.0 官方原生 UA
+        self.webView.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0 Safari/605.1.15"
+
         if let url = URL(string: "https://aistudio.google.com") {
             self.webView.load(URLRequest(url: url))
         }
+    }
+
+    // 智能页面路由感知：判断何时显示原生输入舱
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard let urlString = webView.url?.absoluteString else { return }
+        let isAuthPage = urlString.contains("accounts.google.com") || urlString.contains("ServiceLogin")
+        let isAppWorkspace = urlString.contains("/prompts/") || urlString.contains("/app/") || urlString.contains("aistudio.google.com/live")
+        
+        self.shouldShowInputBar = !isAuthPage && isAppWorkspace
+    }
+
+    // 接管 Google 登录弹窗/新窗口重定向，强制在当前窗口无缝流转
+    func webView(
+        _ webView: WKWebView,
+        createWebViewWith configuration: WKWebViewConfiguration,
+        for navigationAction: WKNavigationAction,
+        windowFeatures: WKWindowFeatures
+    ) -> WKWebView? {
+        if navigationAction.targetFrame == nil {
+            webView.load(navigationAction.request)
+        }
+        return nil
     }
 
     func injectAndRun(text: String) {
@@ -240,18 +274,17 @@ final class WebViewModel: ObservableObject {
                 }
                 input.dispatchEvent(new Event('input', { bubbles: true }));
                 setTimeout(() => {
-                    const runBtn = document.querySelector('button[aria-label*="Run"], button.run-button, button.mat-primary');
+                    const runBtn = document.querySelector('button[aria-label*="Run"], button.run-button, button[mat-tooltip*="Run"]');
                     if (runBtn && !runBtn.disabled) runBtn.click();
                 }, 80);
             }
         })();
         """
-        // 此时处于 @MainActor 作用域内，完全安全同步调用
         webView.evaluateJavaScript(js, completionHandler: nil)
     }
 }
 
-// MARK: - 原生 AppKit 输入封装 (Swift 6 并发安全隔离)
+// MARK: - 原生 AppKit 输入封装
 @MainActor
 struct NativeInputTextView: NSViewRepresentable {
     @Binding var text: String
