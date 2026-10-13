@@ -11,35 +11,36 @@ struct AIStudioApp: App {
             LiquidGlassContainerView()
                 .frame(minWidth: 980, minHeight: 640)
         }
-        .windowStyle(.hiddenTitleBar) // 融合 macOS 26 贯通式流光标题栏
+        .windowStyle(.hiddenTitleBar)
     }
 }
 
-// MARK: - macOS 26 原生 Liquid Glass 动态图标引擎
-class AppDelegate: NSObject, NSApplicationDelegate {
+// MARK: - macOS 26 原生 Liquid Glass 动态图标引擎 (符合 Swift 6 并发安全)
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
-        applyLiquidGlassDockIcon()
+        Self.applyLiquidGlassDockIcon()
         
-        // 监听 macOS 26 系统外观的主题流光变化
+        // 采用 Swift 6 线程安全的异步通知监听，杜绝 self 捕获数据竞争
         DistributedNotificationCenter.default().addObserver(
-            self,
-            selector: #selector(themeDidChange),
-            name: NSNotification.Name("AppleInterfaceThemeChangedNotification"),
-            object: nil
-        )
+            forName: NSNotification.Name("AppleInterfaceThemeChangedNotification"),
+            object: nil,
+            queue: nil
+        ) { _ in
+            Task { @MainActor in
+                AppDelegate.applyLiquidGlassDockIcon()
+            }
+        }
     }
 
-    @objc func themeDidChange() {
-        DispatchQueue.main.async { self.applyLiquidGlassDockIcon() }
-    }
-
-    private func applyLiquidGlassDockIcon() {
+    // 静态主线程方法，无需跨线程发送 self
+    static func applyLiquidGlassDockIcon() {
         let isDarkMode = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         NSApp.applicationIconImage = rendermacOS26Icon(isDark: isDarkMode)
     }
 
     // 符合 macOS 26 规范的 Liquid Glass 矢量图标动态生成
-    private func rendermacOS26Icon(isDark: Bool) -> NSImage {
+    private static func rendermacOS26Icon(isDark: Bool) -> NSImage {
         let canvasSize = NSSize(width: 512, height: 512)
         let iconImage = NSImage(size: canvasSize)
         
@@ -153,7 +154,6 @@ struct LiquidGlassContainerView: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
-            // macOS 26 Liquid Glass 核心属性组合
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 20, style: .continuous)
@@ -185,18 +185,17 @@ struct LiquidGlassContainerView: View {
     }
 }
 
-// MARK: - WebKit 调优层（针对 macOS 26 Safari WebKit 引擎）
-class WebViewModel: NSObject, ObservableObject {
+// MARK: - WebKit 调优层 (严格绑定 @MainActor，解决 Actor-Isolated 警告)
+@MainActor
+final class WebViewModel: ObservableObject {
     var webView: WKWebView!
 
-    override init() {
-        super.init()
+    init() {
         let config = WKWebViewConfiguration()
-        config.websiteDataStore = .default() // 保持登录态与 iPad Pro 实时同步
+        config.websiteDataStore = .default()
 
         let userContent = WKUserContentController()
         
-        // 针对 Intel MacBook Pro 2020 的 DOM 降压虚拟化
         let css = """
         ms-prompt-node, .chat-turn, .history-container > * {
             content-visibility: auto !important;
@@ -214,8 +213,6 @@ class WebViewModel: NSObject, ObservableObject {
         )
         userContent.addUserScript(script)
         config.userContentController = userContent
-        
-        // 模拟 macOS 26 下的最新 Chromium UA 规避 Polyfill 掉帧
         config.applicationNameForUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
         self.webView = WKWebView(frame: .zero, configuration: config)
@@ -249,11 +246,13 @@ class WebViewModel: NSObject, ObservableObject {
             }
         })();
         """
+        // 此时处于 @MainActor 作用域内，完全安全同步调用
         webView.evaluateJavaScript(js, completionHandler: nil)
     }
 }
 
-// MARK: - 原生 AppKit 无卡顿输入封装
+// MARK: - 原生 AppKit 输入封装 (Swift 6 并发安全隔离)
+@MainActor
 struct NativeInputTextView: NSViewRepresentable {
     @Binding var text: String
     var onCommit: () -> Void
@@ -277,7 +276,8 @@ struct NativeInputTextView: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
-    class Coordinator: NSObject, NSTextViewDelegate {
+    @MainActor
+    final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: NativeInputTextView
         init(_ parent: NativeInputTextView) { self.parent = parent }
 
@@ -303,6 +303,7 @@ struct NativeInputTextView: NSViewRepresentable {
     }
 }
 
+@MainActor
 struct OptimizedWebView: NSViewRepresentable {
     @ObservedObject var model: WebViewModel
     func makeNSView(context: Context) -> WKWebView { model.webView }
