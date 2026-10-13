@@ -15,17 +15,17 @@ struct AIStudioApp: App {
     }
 }
 
-// MARK: - 极简纯净主视图：零多余遮挡，100% 官方沉浸界面
+// MARK: - 极简纯净主视图
 struct CleanAIStudioView: View {
     @StateObject private var model = WebViewModel()
 
     var body: some View {
         OptimizedWebView(model: model)
-            .ignoresSafeArea() // 全屏无缝铺满，彻底移除任何悬浮遮挡
+            .ignoresSafeArea()
     }
 }
 
-// MARK: - WebKit 底层引擎调优（宿主特权层绕过 CSP，底层静默加速）
+// MARK: - WebKit 底层引擎调优（开启 Web Inspector 调试与底层静默加速）
 @MainActor
 final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     var webView: WKWebView!
@@ -33,20 +33,23 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     override init() {
         super.init()
         let config = WKWebViewConfiguration()
-        config.websiteDataStore = .default() // 保持持久化 Cookie 登录态，与 iPad Pro 实时互通
+        config.websiteDataStore = .default()
         config.preferences.javaScriptCanOpenWindowsAutomatically = true
+
+        // 1. 开启经典右键开发者菜单属性
+        config.preferences.setValue(true, forKey: "developerExtrasEnabled")
 
         let userContent = WKUserContentController()
 
-        // 核心技术点：WKUserScript 以宿主特权身份注入，完全不受页面 CSP（内容安全策略）限制
+        // 宿主特权层 CSS 注入：隔离输入框重排链 + 视口外历史消息虚拟化
         let engineTuningCSS = """
-        /* 1. 视口外历史消息完全跳过几何排版与重绘，彻底卸下 2020 Intel CPU 负担 */
+        /* 视口外历史消息跳过排版，释放 CPU */
         ms-chat-turn, .chat-turn, ms-prompt-node, .prompt-node, .history-container > *, ms-run-chunk, .chat-chunk {
             content-visibility: auto !important;
             contain-intrinsic-size: 80px 240px !important;
         }
 
-        /* 2. 核心：将网页自带的输入框强行圈为“排版孤岛”！敲字时阻断向上重排链路 */
+        /* 输入框排版隔离，阻断长对话打字向上级联重排 */
         textarea, [contenteditable="true"], .prompt-editor, ms-prompt-editor, [role="textbox"] {
             contain: layout style paint !important;
             spellcheck: false !important;
@@ -54,7 +57,6 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
             autocapitalize: off !important;
         }
 
-        /* 3. 提升历史滚动层的 GPU 硬件加速 */
         .chat-history, .prompt-history, ms-prompt-history {
             will-change: transform;
             transform: translateZ(0);
@@ -73,7 +75,10 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         self.webView.navigationDelegate = self
         self.webView.uiDelegate = self
 
-        // 绑定你 MacBook Pro 真实的 Safari 27.0 官方原生 UA，确保 100% 顺畅登录
+        // 2. 核心：开启 macOS 现代 Web Inspector 审查器（支持右键检查元素）
+        self.webView.isInspectable = true
+
+        // 绑定原生 Safari 27.0 官方真实 UA，确保顺畅登录
         self.webView.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0 Safari/605.1.15"
 
         if let url = URL(string: "https://aistudio.google.com") {
@@ -81,7 +86,7 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         }
     }
 
-    // 接管登录重定向与弹窗，单窗口内平滑流转
+    // 接管登录重定向与弹窗
     func webView(
         _ webView: WKWebView,
         createWebViewWith configuration: WKWebViewConfiguration,
@@ -103,7 +108,7 @@ struct OptimizedWebView: NSViewRepresentable {
     func updateNSView(_ nsView: WKWebView, context: Context) {}
 }
 
-// MARK: - 三排文字 Liquid Glass 动态图标引擎 (符合 Swift 6 并发安全规范)
+// MARK: - 动态 Liquid Glass 文字图标引擎（按黄金比例放大第一排与第三排）
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -125,7 +130,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.applicationIconImage = rendermacOS26TextIcon(isDark: isDarkMode)
     }
 
-    // 三排纯文字 Liquid Glass 质感图标生成
     private static func rendermacOS26TextIcon(isDark: Bool) -> NSImage {
         let canvasSize = NSSize(width: 512, height: 512)
         let iconImage = NSImage(size: canvasSize)
@@ -139,7 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let baseRect = CGRect(x: 48, y: 48, width: 416, height: 416)
         let squirclePath = CGPath(roundedRect: baseRect, cornerWidth: 104, cornerHeight: 104, transform: nil)
 
-        // 1. 拟态背光漫反射阴影 (Ambient Shadow)
+        // 1. 拟态背光漫反射阴影
         ctx.saveGState()
         let shadowColor = isDark ? NSColor.black.withAlphaComponent(0.48).cgColor : NSColor.black.withAlphaComponent(0.22).cgColor
         ctx.setShadow(offset: CGSize(width: 0, height: -16), blur: 36, color: shadowColor)
@@ -147,7 +151,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ctx.fillPath()
         ctx.restoreGState()
 
-        // 2. 液体玻璃主体底座 (Liquid Glass Body)
+        // 2. 液体玻璃主体底座
         ctx.saveGState()
         ctx.addPath(squirclePath)
         ctx.clip()
@@ -165,7 +169,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ctx.drawLinearGradient(glassGrad, start: CGPoint(x: 256, y: 464), end: CGPoint(x: 256, y: 48), options: [])
         }
 
-        // 3. 菲涅尔边缘高光环 (Fresnel Specular Rim)
+        // 3. 菲涅尔边缘高光环
         let rimPath = CGPath(roundedRect: baseRect.insetBy(dx: 3, dy: 3), cornerWidth: 101, cornerHeight: 101, transform: nil)
         ctx.setLineWidth(2.5)
         let rimColor = isDark ? NSColor.white.withAlphaComponent(0.32).cgColor : NSColor.white.withAlphaComponent(0.85).cgColor
@@ -173,36 +177,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ctx.addPath(rimPath)
         ctx.strokePath()
 
-        // 4. 三排文字核心排版 (Google / AI / Studio)
+        // 4. 三排文字排版（适度放大首尾两排字体，居中严密排版）
         let pStyle = NSMutableParagraphStyle()
         pStyle.alignment = .center
 
-        // 第一排: Google
+        // 第一排: Google（从 44pt 放大到 62pt Heavy）
         let googleAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 44, weight: .bold),
-            .foregroundColor: isDark ? NSColor(white: 0.88, alpha: 1.0) : NSColor(red: 0.22, green: 0.24, blue: 0.30, alpha: 1.0),
+            .font: NSFont.systemFont(ofSize: 62, weight: .heavy),
+            .foregroundColor: isDark ? NSColor(white: 0.90, alpha: 1.0) : NSColor(red: 0.20, green: 0.22, blue: 0.28, alpha: 1.0),
             .paragraphStyle: pStyle,
-            .kern: 1.2
+            .kern: 0.5
         ]
-        "Google".draw(in: CGRect(x: 48, y: 326, width: 416, height: 52), withAttributes: googleAttrs)
+        "Google".draw(in: CGRect(x: 48, y: 322, width: 416, height: 72), withAttributes: googleAttrs)
 
-        // 第二排: AI (视觉焦点 Hero)
+        // 第二排: AI（保持视觉焦点 96pt Black）
         let aiAttrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 96, weight: .black),
             .foregroundColor: isDark ? NSColor.white : NSColor(red: 0.06, green: 0.08, blue: 0.14, alpha: 1.0),
             .paragraphStyle: pStyle,
-            .kern: 3.0
+            .kern: 2.5
         ]
-        "AI".draw(in: CGRect(x: 48, y: 206, width: 416, height: 110), withAttributes: aiAttrs)
+        "AI".draw(in: CGRect(x: 48, y: 206, width: 416, height: 106), withAttributes: aiAttrs)
 
-        // 第三排: Studio
+        // 第三排: Studio（从 48pt 放大到 66pt Heavy）
         let studioAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 48, weight: .bold),
-            .foregroundColor: isDark ? NSColor(white: 0.82, alpha: 1.0) : NSColor(red: 0.32, green: 0.35, blue: 0.42, alpha: 1.0),
+            .font: NSFont.systemFont(ofSize: 66, weight: .heavy),
+            .foregroundColor: isDark ? NSColor(white: 0.86, alpha: 1.0) : NSColor(red: 0.28, green: 0.31, blue: 0.38, alpha: 1.0),
             .paragraphStyle: pStyle,
-            .kern: 1.8
+            .kern: 0.5
         ]
-        "Studio".draw(in: CGRect(x: 48, y: 140, width: 416, height: 56), withAttributes: studioAttrs)
+        "Studio".draw(in: CGRect(x: 48, y: 122, width: 416, height: 76), withAttributes: studioAttrs)
 
         ctx.restoreGState()
         iconImage.unlockFocus()
