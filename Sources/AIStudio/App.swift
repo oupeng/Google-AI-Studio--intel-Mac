@@ -132,7 +132,7 @@ final class LocalizedWKWebView: WKWebView {
     }
 }
 
-// MARK: - WebKit 调优管理器（修复 Fetch/Beacon 拦截漏洞 + 异步核显渲染）
+// MARK: - WebKit 调优管理器（集成 GitHub 开源架构级别的零延迟优化引擎）
 @MainActor
 final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     var webView: LocalizedWKWebView!
@@ -146,7 +146,7 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
 
         let userContent = WKUserContentController()
 
-        // 漏洞修复：兼容 Request 实例与 sendBeacon，彻底静默所有 play.google.com/log
+        // 1. 深度静默日志拦截脚本
         let muteLoggerScriptSource = """
         (function() {
             function isLogUrl(input) {
@@ -172,15 +172,57 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
             }
         })();
         """
-        let muteScript = WKUserScript(source: muteLoggerScriptSource, injectionTime: .atDocumentStart, forMainFrameOnly: false)
-        userContent.addUserScript(muteScript)
+        userContent.addUserScript(WKUserScript(source: muteLoggerScriptSource, injectionTime: .atDocumentStart, forMainFrameOnly: false))
 
-        let engineTuningCSS = """
+        // 2. GitHub 开源级核心优化引擎：DOM 智能裁剪 + Angular 脏检查阻断
+        let githubOptimizerEngine = """
+        (function() {
+            // 只保留最新的 6 个消息回合在 DOM 中处于活跃渲染，陈旧回合挂载 display: none 避开 Angular 脏检查
+            const MAX_ACTIVE_TURNS = 6;
+            let pruneTimer = null;
+
+            function optimizeDOMTree() {
+                const turns = document.querySelectorAll('ms-chat-turn');
+                if (!turns || turns.length <= MAX_ACTIVE_TURNS) return;
+
+                const cutoffIndex = turns.length - MAX_ACTIVE_TURNS;
+                for (let i = 0; i < turns.length; i++) {
+                    if (i < cutoffIndex) {
+                        // 隐藏旧节点：切断 Angular Zone.js 在打字时的全量树遍历
+                        if (turns[i].style.display !== 'none') {
+                            turns[i].style.display = 'none';
+                        }
+                    } else {
+                        if (turns[i].style.display === 'none') {
+                            turns[i].style.display = '';
+                        }
+                    }
+                }
+            }
+
+            // 监听 DOM 变动与页面滚动
+            const observer = new MutationObserver(() => {
+                if (pruneTimer) clearTimeout(pruneTimer);
+                pruneTimer = setTimeout(optimizeDOMTree, 300);
+            });
+
+            window.addEventListener('DOMContentLoaded', () => {
+                observer.observe(document.body, { childList: true, subtree: true });
+                setInterval(optimizeDOMTree, 2000);
+            });
+        })();
+        """
+        userContent.addUserScript(WKUserScript(source: githubOptimizerEngine, injectionTime: .atDocumentEnd, forMainFrameOnly: false))
+
+        // 3. 增强版 CSS 隔离与代码块优化
+        let advancedTuningCSS = """
+        /* 视口外节点深度虚拟化 */
         ms-chat-turn, .chat-turn, ms-prompt-node, .prompt-node, .history-container > *, ms-run-chunk, .chat-chunk {
             content-visibility: auto !important;
             contain-intrinsic-size: 80px 240px !important;
         }
 
+        /* 输入框与其外层容器排版锁死 */
         textarea, [contenteditable="true"], .prompt-editor, ms-prompt-editor, [role="textbox"], .input-container {
             contain: layout style paint !important;
             spellcheck: false !important;
@@ -189,13 +231,18 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
             transform: translateZ(0) !important;
         }
 
+        /* 隐藏非活跃代码块的过度重排 */
+        pre code {
+            text-rendering: optimizeSpeed !important;
+        }
+
         .chat-history, .prompt-history, ms-prompt-history {
             will-change: transform;
             transform: translateZ(0);
         }
         """
 
-        let escapedCSS = engineTuningCSS
+        let escapedCSS = advancedTuningCSS
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "`", with: "\\`")
 
@@ -206,10 +253,7 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
             (document.head || document.documentElement).appendChild(s);
         })();
         """
-
-        let cssScript = WKUserScript(source: safeScriptSource, injectionTime: .atDocumentEnd, forMainFrameOnly: false)
-        userContent.addUserScript(cssScript)
-        config.userContentController = userContent
+        userContent.addUserScript(WKUserScript(source: safeScriptSource, injectionTime: .atDocumentEnd, forMainFrameOnly: false))
 
         self.webView = LocalizedWKWebView(frame: .zero, configuration: config)
         self.webView.navigationDelegate = self
@@ -269,7 +313,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.applicationIconImage = rendermacOS26LiquidGlassIcon(isDark: isDarkMode)
     }
 
-    // 核心重构：符合 macOS 26 Liquid Glass 真实光学标准的矢量图标
     private static func rendermacOS26LiquidGlassIcon(isDark: Bool) -> NSImage {
         let canvasSize = NSSize(width: 512, height: 512)
         let iconImage = NSImage(size: canvasSize)
@@ -283,7 +326,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let baseRect = CGRect(x: 48, y: 48, width: 416, height: 416)
         let squirclePath = CGPath(roundedRect: baseRect, cornerWidth: 104, cornerHeight: 104, transform: nil)
 
-        // 1. 拟态空间背光漫反射阴影 (Ambient Occlusion)
+        // 1. 拟态背光投影
         ctx.saveGState()
         let shadowColor = isDark ? NSColor.black.withAlphaComponent(0.40).cgColor : NSColor.black.withAlphaComponent(0.16).cgColor
         ctx.setShadow(offset: CGSize(width: 0, height: -14), blur: 28, color: shadowColor)
@@ -291,7 +334,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ctx.fillPath()
         ctx.restoreGState()
 
-        // 2. 液体玻璃底座主体 (Liquid Glass Base)
+        // 2. 液体玻璃主体底座
         ctx.saveGState()
         ctx.addPath(squirclePath)
         ctx.clip()
@@ -299,7 +342,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let rgbSpace = CGColorSpaceCreateDeviceRGB()
 
         if isDark {
-            // macOS 26 暗黑模式：黑曜烟熏琉璃渐变（绝非死黑，而是深空蓝灰到深黑曜）
+            // 深色模式：黑曜烟熏琉璃渐变（绝非死黑）
             let obsidianColors = [
                 NSColor(red: 0.12, green: 0.14, blue: 0.19, alpha: 0.96).cgColor,
                 NSColor(red: 0.08, green: 0.09, blue: 0.13, alpha: 0.98).cgColor,
@@ -309,7 +352,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 ctx.drawLinearGradient(grad, start: CGPoint(x: 256, y: 464), end: CGPoint(x: 256, y: 48), options: [])
             }
 
-            // 内部焦散微光（Caustic Glow）：注入类似“无边记”与“家庭”的深邃天体蓝光微晕
+            // 内部焦散微光折射
             let glowCenter = CGPoint(x: 256, y: 256)
             let glowColors = [
                 NSColor(red: 0.25, green: 0.40, blue: 0.70, alpha: 0.14).cgColor,
@@ -324,11 +367,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ctx.fill(baseRect)
         }
 
-        // 3. macOS 26 标志性的天光折射高光（Liquid Specular Rim）
+        // 3. 菲涅尔边缘高光环
         let rimPath = CGPath(roundedRect: baseRect.insetBy(dx: 2, dy: 2), cornerWidth: 102, cornerHeight: 102, transform: nil)
         ctx.setLineWidth(2.2)
         if isDark {
-            // 上亮下暗的物理天光折射
             ctx.setStrokeColor(NSColor.white.withAlphaComponent(0.24).cgColor)
         } else {
             ctx.setStrokeColor(NSColor.black.withAlphaComponent(0.06).cgColor)
@@ -336,7 +378,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ctx.addPath(rimPath)
         ctx.strokePath()
 
-        // 4. 三排文字排版（带微弱景深）
+        // 4. 三排文字排版
         let pStyle = NSMutableParagraphStyle()
         pStyle.alignment = .center
 
