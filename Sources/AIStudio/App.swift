@@ -79,10 +79,9 @@ struct CleanAIStudioView: View {
     }
 }
 
-// MARK: - 深度汉化版 WKWebView (接管右键菜单进行 100% 简体中文本地化)
+// MARK: - 深度汉化版 WKWebView
 @MainActor
 final class LocalizedWKWebView: WKWebView {
-    // 菜单项英文 -> 简体中文对照字典
     private let menuTranslations: [String: String] = [
         "Inspect Element": "检查元素",
         "Reload Page": "重新加载页面",
@@ -107,14 +106,7 @@ final class LocalizedWKWebView: WKWebView {
         "Speech": "语音",
         "Start Speaking": "开始朗读",
         "Stop Speaking": "停止朗读",
-        "Spelling and Grammar": "拼写和语法",
-        "Show Spelling and Grammar": "显示拼写和语法",
-        "Check Document Now": "立即检查文稿",
-        "Substitutions": "替换",
-        "Transformations": "转换",
-        "Make Upper Case": "变为大写",
-        "Make Lower Case": "变为小写",
-        "Capitalize": "首字母大写"
+        "Spelling and Grammar": "拼写和语法"
     ]
 
     override func menu(for event: NSEvent) -> NSMenu? {
@@ -125,23 +117,14 @@ final class LocalizedWKWebView: WKWebView {
 
     private func localizeMenu(_ menu: NSMenu) {
         for item in menu.items {
-            let trimmedTitle = item.title.trimmingCharacters(in: .whitespaces)
-            
-            // 匹配字典进行精准汉化
-            if let localized = menuTranslations[trimmedTitle] {
+            let trimmed = item.title.trimmingCharacters(in: .whitespaces)
+            if let localized = menuTranslations[trimmed] {
                 item.title = localized
-            } else {
-                // 处理带引号的查询语句，如: Look Up "xxx"
-                if trimmedTitle.hasPrefix("Look Up ") {
-                    let term = String(trimmedTitle.dropFirst(8))
-                    item.title = "查询 \(term)"
-                } else if trimmedTitle.hasPrefix("Search with ") {
-                    let term = String(trimmedTitle.dropFirst(12))
-                    item.title = "在网页中搜索 \(term)"
-                }
+            } else if trimmed.hasPrefix("Look Up ") {
+                item.title = "查询 \(trimmed.dropFirst(8))"
+            } else if trimmed.hasPrefix("Search with ") {
+                item.title = "在网页中搜索 \(trimmed.dropFirst(12))"
             }
-
-            // 递归汉化可能存在的子菜单
             if let submenu = item.submenu {
                 localizeMenu(submenu)
             }
@@ -149,7 +132,7 @@ final class LocalizedWKWebView: WKWebView {
     }
 }
 
-// MARK: - WebKit 调优管理器
+// MARK: - WebKit 调优管理器（深度静音日志 + 异步渲染）
 @MainActor
 final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     var webView: LocalizedWKWebView!
@@ -163,17 +146,36 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
 
         let userContent = WKUserContentController()
 
+        // 核心优化 1：静默处理打字时高频触发的 play.google.com/log，根除控制台反复抛错和重试
+        let muteLoggerScriptSource = """
+        (function() {
+            const originalFetch = window.fetch;
+            window.fetch = function(url, options) {
+                if (typeof url === 'string' && url.includes('play.google.com/log')) {
+                    return Promise.resolve(new Response(JSON.stringify({}), { status: 200 }));
+                }
+                return originalFetch.apply(this, arguments);
+            };
+        })();
+        """
+        let muteScript = WKUserScript(source: muteLoggerScriptSource, injectionTime: .atDocumentStart, forMainFrameOnly: false)
+        userContent.addUserScript(muteScript)
+
+        // 核心优化 2：输入区层级固化与长对话虚拟化
         let engineTuningCSS = """
+        /* 视口外历史跳过排版 */
         ms-chat-turn, .chat-turn, ms-prompt-node, .prompt-node, .history-container > *, ms-run-chunk, .chat-chunk {
             content-visibility: auto !important;
             contain-intrinsic-size: 80px 240px !important;
         }
 
-        textarea, [contenteditable="true"], .prompt-editor, ms-prompt-editor, [role="textbox"] {
+        /* 输入框与其外层容器排版锁死 */
+        textarea, [contenteditable="true"], .prompt-editor, ms-prompt-editor, [role="textbox"], .input-container {
             contain: layout style paint !important;
             spellcheck: false !important;
             autocorrect: off !important;
             autocapitalize: off !important;
+            transform: translateZ(0) !important;
         }
 
         .chat-history, .prompt-history, ms-prompt-history {
@@ -194,18 +196,17 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         })();
         """
 
-        let cssScript = WKUserScript(
-            source: safeScriptSource,
-            injectionTime: .atDocumentEnd,
-            forMainFrameOnly: false
-        )
+        let cssScript = WKUserScript(source: safeScriptSource, injectionTime: .atDocumentEnd, forMainFrameOnly: false)
         userContent.addUserScript(cssScript)
         config.userContentController = userContent
 
-        // 初始化继承自本地化右键类的实例
         self.webView = LocalizedWKWebView(frame: .zero, configuration: config)
         self.webView.navigationDelegate = self
         self.webView.uiDelegate = self
+
+        // 核心优化 3：开启 Intel 核显 CoreAnimation 异步绘制
+        self.webView.wantsLayer = true
+        self.webView.layer?.drawsAsynchronously = true
 
         self.webView.isInspectable = true
         self.webView.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0 Safari/605.1.15"
