@@ -150,7 +150,7 @@ final class LocalizedWKWebView: WKWebView {
     }
 }
 
-// MARK: - WebKit 调优管理器（常驻后台全自动滑动窗口引擎）
+// MARK: - WebKit 调优管理器（安全无损版引擎）
 @MainActor
 final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     var webView: LocalizedWKWebView!
@@ -163,7 +163,7 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
 
         let userContent = WKUserContentController()
 
-        // 1. 全量网络日志屏蔽
+        // 1. 原型链级网络日志屏蔽
         let protoMuterScript = """
         (function() {
             function isLogUrl(input) {
@@ -224,8 +224,8 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         """
         userContent.addUserScript(WKUserScript(source: protoMuterScript, injectionTime: .atDocumentStart, forMainFrameOnly: false))
 
-        // 2. 自动化常驻后台的 DOM 裁剪引擎 + 顶部“一键展开/收起历史”按钮
-        let autoEngineScript = """
+        // 2. 经过安全边界加固的常驻动态裁剪引擎（带一键展开/收起）
+        let safeEngineScript = """
         (function() {
             const MAX_VISIBLE = 6;
             let userExpanded = false;
@@ -241,16 +241,16 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                 const cutoff = items.length - MAX_VISIBLE;
 
                 if (!userExpanded) {
-                    // 全自动折叠超额面板，阻断 Angular Zone.js 扫描
+                    // 折叠多余面板
                     for (let i = 0; i < cutoff; i++) {
                         items[i].style.setProperty('display', 'none', 'important');
                     }
                     for (let i = cutoff; i < items.length; i++) {
                         items[i].style.removeProperty('display');
                     }
-                    renderExpandBar(cutoff, items[cutoff]);
+                    renderExpandBar(cutoff, items[cutoff], false);
                 } else {
-                    // 用户点击展开看历史时的处理
+                    // 展开全部面板供用户回看
                     for (let i = 0; i < items.length; i++) {
                         items[i].style.removeProperty('display');
                     }
@@ -258,7 +258,6 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                 }
             }
 
-            // 在聊天内容上方插入优雅的展开/收起控制条
             function renderExpandBar(hiddenCount, referenceNode, isExpanded) {
                 if (!referenceNode || !referenceNode.parentNode) return;
 
@@ -266,7 +265,7 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                 if (!bar) {
                     bar = document.createElement('div');
                     bar.id = 'aistudio-history-toggle-bar';
-                    bar.style.cssText = 'text-align: center; padding: 10px 14px; margin: 16px auto; cursor: pointer; color: #8ab4f8; font-size: 13px; font-weight: 500; background: rgba(138, 180, 248, 0.08); border-radius: 10px; border: 1px dashed rgba(138, 180, 248, 0.35); max-width: 600px; transition: all 0.2s; user-select: none;';
+                    bar.style.cssText = 'text-align: center; padding: 10px 14px; margin: 16px auto; cursor: pointer; color: #8ab4f8; font-size: 13px; font-weight: 500; background: rgba(138, 180, 248, 0.08); border-radius: 10px; border: 1px dashed rgba(138, 180, 248, 0.35); max-width: 600px; transition: background 0.2s; user-select: none;';
                     bar.onmouseover = () => bar.style.background = 'rgba(138, 180, 248, 0.16)';
                     bar.onmouseout = () => bar.style.background = 'rgba(138, 180, 248, 0.08)';
                     bar.onclick = () => {
@@ -313,15 +312,16 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
             }
         })();
         """
-        userContent.addUserScript(WKUserScript(source: autoEngineScript, injectionTime: .atDocumentEnd, forMainFrameOnly: false))
+        userContent.addUserScript(WKUserScript(source: safeEngineScript, injectionTime: .atDocumentEnd, forMainFrameOnly: false))
 
-        // 3. 增强版 CSS 纯排版隔离
+        // 3. 局部的纯排版隔离（不搞破坏下拉菜单的全局动画禁用，坚决不加 translateZ）
         let advancedTuningCSS = """
         ms-chat-turn, .chat-turn, ms-prompt-node, .prompt-node, .history-container > *, ms-run-chunk, .chat-chunk, mat-expansion-panel {
             content-visibility: auto !important;
             contain-intrinsic-size: 80px 240px !important;
         }
 
+        /* 纯排版隔离，保护输入内容安全 */
         textarea, [contenteditable="true"], .prompt-editor, ms-prompt-editor, [role="textbox"], .input-container {
             contain: layout style paint !important;
             spellcheck: false !important;
@@ -329,8 +329,9 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
             autocapitalize: off !important;
         }
 
-        pre code {
-            text-rendering: optimizeSpeed !important;
+        /* 仅在历史消息区域消除过渡，绝不破坏全局下拉框与加载动画 */
+        .chat-history *, .prompt-history * {
+            transition: none !important;
         }
         """
 
