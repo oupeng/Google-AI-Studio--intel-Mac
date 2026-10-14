@@ -17,7 +17,7 @@ jobs:
             --arch x86_64 \
             -Xswiftc -target -Xswiftc x86_64-apple-macosx26.0
 
-      - name: Package Standalone App Bundle with Localization & AppIcon
+      - name: Package Standalone App Bundle with Guaranteed AppIcon.icns
         run: |
           APP_NAME="AIStudio"
           APP_DIR="$APP_NAME.app"
@@ -27,66 +27,75 @@ jobs:
 
           mkdir -p "$MACOS"
           mkdir -p "$RESOURCES"
-
-          # 1. 核心修复：创建简体中文语言包目录，通知 macOS 启用系统级中文环境
           mkdir -p "$RESOURCES/zh-Hans.lproj"
           mkdir -p "$RESOURCES/zh_CN.lproj"
 
-          # 拷贝二进制
+          # 拷贝编译好的二进制
           BIN_PATH=$(find .build -name "$APP_NAME" -type f -perm +111 | grep "release" | head -n 1)
           cp "$BIN_PATH" "$MACOS/$APP_NAME"
           chmod +x "$MACOS/$APP_NAME"
 
-          # 2. 导出物理 AppIcon.icns
+          # 1. 采用无窗口依赖的 NSBitmapImageRep 离线渲染 1024 纯白底高清矢量图（和 Gemini 完全一致）
           cat << 'EOF' > make_icns.swift
           import AppKit
 
-          let size = NSSize(width: 1024, height: 1024)
-          let img = NSImage(size: size)
-          img.lockFocus()
-          guard let ctx = NSGraphicsContext.current?.cgContext else { exit(1) }
+          let width = 1024
+          let height = 1024
+          guard let rep = NSBitmapImageRep(
+              bitmapDataPlanes: nil,
+              pixelsWide: width,
+              pixelsHigh: height,
+              bitsPerSample: 8,
+              samplesPerPixel: 4,
+              hasAlpha: true,
+              isPlanar: false,
+              colorSpaceName: .deviceRGB,
+              bytesPerRow: width * 4,
+              bitsPerPixel: 32
+          ) else { exit(1) }
+
+          NSGraphicsContext.saveGraphicsState()
+          guard let ctx = NSGraphicsContext(bitmapImageRep: rep) else { exit(1) }
+          NSGraphicsContext.current = ctx
+          let cg = ctx.cgContext
 
           let rect = CGRect(x: 96, y: 96, width: 832, height: 832)
           let squircle = CGPath(roundedRect: rect, cornerWidth: 208, cornerHeight: 208, transform: nil)
 
-          ctx.saveGState()
-          ctx.setShadow(offset: CGSize(width: 0, height: -32), blur: 72, color: NSColor.black.withAlphaComponent(0.48).cgColor)
-          ctx.addPath(squircle)
-          ctx.fillPath()
-          ctx.restoreGState()
+          // 拟态柔和投影
+          cg.saveGState()
+          cg.setShadow(offset: CGSize(width: 0, height: -24), blur: 50, color: NSColor.black.withAlphaComponent(0.18).cgColor)
+          cg.addPath(squircle)
+          cg.fillPath()
+          cg.restoreGState()
 
-          ctx.saveGState()
-          ctx.addPath(squircle)
-          ctx.clip()
+          // 纯正白色底座（与 Gemini 图标完全一致）
+          cg.saveGState()
+          cg.addPath(squircle)
+          cg.clip()
+          cg.setFillColor(NSColor.white.cgColor)
+          cg.fill(rect)
 
-          let space = CGColorSpaceCreateDeviceRGB()
-          let colors = [
-              NSColor(red: 0.12, green: 0.13, blue: 0.18, alpha: 0.90).cgColor,
-              NSColor(red: 0.04, green: 0.04, blue: 0.07, alpha: 0.98).cgColor
-          ]
-          if let grad = CGGradient(colorsSpace: space, colors: colors as CFArray, locations: [0.0, 1.0]) {
-              ctx.drawLinearGradient(grad, start: CGPoint(x: 512, y: 928), end: CGPoint(x: 512, y: 96), options: [])
-          }
+          // 极细微边框，确保浅色背景下轮廓分明
+          cg.setLineWidth(3.0)
+          cg.setStrokeColor(NSColor.black.withAlphaComponent(0.08).cgColor)
+          cg.addPath(squircle)
+          cg.strokePath()
 
-          let rim = CGPath(roundedRect: rect.insetBy(dx: 6, dy: 6), cornerWidth: 202, cornerHeight: 202, transform: nil)
-          ctx.setLineWidth(5.0)
-          ctx.setStrokeColor(NSColor.white.withAlphaComponent(0.35).cgColor)
-          ctx.addPath(rim)
-          ctx.strokePath()
-
+          // 三排纯黑实体文字排版
           let pStyle = NSMutableParagraphStyle()
           pStyle.alignment = .center
 
           let gAttrs: [NSAttributedString.Key: Any] = [
               .font: NSFont.systemFont(ofSize: 132, weight: .heavy),
-              .foregroundColor: NSColor(white: 0.92, alpha: 1.0),
+              .foregroundColor: NSColor(white: 0.08, alpha: 1.0),
               .paragraphStyle: pStyle
           ]
           "Google".draw(in: CGRect(x: 96, y: 640, width: 832, height: 152), withAttributes: gAttrs)
 
           let aAttrs: [NSAttributedString.Key: Any] = [
               .font: NSFont.systemFont(ofSize: 192, weight: .black),
-              .foregroundColor: NSColor.white,
+              .foregroundColor: NSColor.black,
               .paragraphStyle: pStyle,
               .kern: 5.0
           ]
@@ -94,36 +103,38 @@ jobs:
 
           let sAttrs: [NSAttributedString.Key: Any] = [
               .font: NSFont.systemFont(ofSize: 144, weight: .heavy),
-              .foregroundColor: NSColor(white: 0.88, alpha: 1.0),
+              .foregroundColor: NSColor(white: 0.12, alpha: 1.0),
               .paragraphStyle: pStyle
           ]
           "Studio".draw(in: CGRect(x: 96, y: 232, width: 832, height: 164), withAttributes: sAttrs)
 
-          ctx.restoreGState()
-          img.unlockFocus()
+          cg.restoreGState()
+          NSGraphicsContext.restoreGraphicsState()
 
-          if let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff), let png = rep.representation(using: .png, properties: [:]) {
-              try? png.write(to: URL(fileURLWithPath: "base_1024.png"))
+          if let png = rep.representation(using: .png, properties: [:]) {
+              try? png.write(to: URL(fileURLWithPath: "icon_1024.png"))
           }
           EOF
 
           swift make_icns.swift
 
+          # 2. 生成标准的 AppIcon.iconset 全套分辨率（包括 16x16 / 32x32 用于切换器小图）
           mkdir -p AppIcon.iconset
-          sips -z 16 16     base_1024.png --out AppIcon.iconset/icon_16x16.png
-          sips -z 32 32     base_1024.png --out AppIcon.iconset/icon_16x16@2x.png
-          sips -z 32 32     base_1024.png --out AppIcon.iconset/icon_32x32.png
-          sips -z 64 64     base_1024.png --out AppIcon.iconset/icon_32x32@2x.png
-          sips -z 128 128   base_1024.png --out AppIcon.iconset/icon_128x128.png
-          sips -z 256 256   base_1024.png --out AppIcon.iconset/icon_128x128@2x.png
-          sips -z 256 256   base_1024.png --out AppIcon.iconset/icon_256x256.png
-          sips -z 512 512   base_1024.png --out AppIcon.iconset/icon_256x256@2x.png
-          sips -z 512 512   base_1024.png --out AppIcon.iconset/icon_512x512.png
-          cp base_1024.png AppIcon.iconset/icon_512x512@2x.png
+          sips -z 16 16     icon_1024.png --out AppIcon.iconset/icon_16x16.png
+          sips -z 32 32     icon_1024.png --out AppIcon.iconset/icon_16x16@2x.png
+          sips -z 32 32     icon_1024.png --out AppIcon.iconset/icon_32x32.png
+          sips -z 64 64     icon_1024.png --out AppIcon.iconset/icon_32x32@2x.png
+          sips -z 128 128   icon_1024.png --out AppIcon.iconset/icon_128x128.png
+          sips -z 256 256   icon_1024.png --out AppIcon.iconset/icon_128x128@2x.png
+          sips -z 256 256   icon_1024.png --out AppIcon.iconset/icon_256x256.png
+          sips -z 512 512   icon_1024.png --out AppIcon.iconset/icon_256x256@2x.png
+          sips -z 512 512   icon_1024.png --out AppIcon.iconset/icon_512x512.png
+          cp icon_1024.png AppIcon.iconset/icon_512x512@2x.png
 
+          # 编译生成绝对可靠的物理 AppIcon.icns
           iconutil -c icns AppIcon.iconset -o "$RESOURCES/AppIcon.icns"
 
-          # 3. 注入支持简体中文的 Info.plist
+          # 3. 严格写入 Info.plist（指定 AppIcon.icns，彻底移除 CFBundleIconName 冲突项，更新 Bundle ID 击穿缓存）
           cat <<EOF > "$CONTENTS/Info.plist"
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -132,7 +143,7 @@ jobs:
               <key>CFBundleExecutable</key>
               <string>$APP_NAME</string>
               <key>CFBundleIdentifier</key>
-              <string>com.user.aistudio.intel2020</string>
+              <string>com.oupeng.aistudio.macapp</string>
               <key>CFBundleName</key>
               <string>$APP_NAME</string>
               <key>CFBundlePackageType</key>
@@ -140,9 +151,7 @@ jobs:
               <key>CFBundleShortVersionString</key>
               <string>26.7.0</string>
               <key>CFBundleIconFile</key>
-              <string>AppIcon</string>
-              <key>CFBundleIconName</key>
-              <string>AppIcon</string>
+              <string>AppIcon.icns</string>
               <key>CFBundleDevelopmentRegion</key>
               <string>zh_CN</string>
               <key>CFBundleAllowMixedLocalizations</key>
