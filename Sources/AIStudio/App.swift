@@ -132,7 +132,7 @@ final class LocalizedWKWebView: WKWebView {
     }
 }
 
-// MARK: - WebKit 调优管理器
+// MARK: - WebKit 调优管理器（修复 Fetch/Beacon 拦截漏洞 + 异步核显渲染）
 @MainActor
 final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     var webView: LocalizedWKWebView!
@@ -146,22 +146,35 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
 
         let userContent = WKUserContentController()
 
-        // 屏蔽 play.google.com/log 网络报错重试
+        // 漏洞修复：兼容 Request 实例与 sendBeacon，彻底静默所有 play.google.com/log
         let muteLoggerScriptSource = """
         (function() {
+            function isLogUrl(input) {
+                if (typeof input === 'string') return input.indexOf('play.google.com/log') !== -1;
+                if (input && typeof input.url === 'string') return input.url.indexOf('play.google.com/log') !== -1;
+                return false;
+            }
+
             const originalFetch = window.fetch;
-            window.fetch = function(url, options) {
-                if (typeof url === 'string' && url.includes('play.google.com/log')) {
+            window.fetch = function(resource, init) {
+                if (isLogUrl(resource)) {
                     return Promise.resolve(new Response(JSON.stringify({}), { status: 200 }));
                 }
                 return originalFetch.apply(this, arguments);
             };
+
+            if (navigator.sendBeacon) {
+                const originalBeacon = navigator.sendBeacon;
+                navigator.sendBeacon = function(url, data) {
+                    if (isLogUrl(url)) return true;
+                    return originalBeacon.apply(this, arguments);
+                };
+            }
         })();
         """
         let muteScript = WKUserScript(source: muteLoggerScriptSource, injectionTime: .atDocumentStart, forMainFrameOnly: false)
         userContent.addUserScript(muteScript)
 
-        // 视口外历史跳过排版 + 输入框排版隔离（放行数据流，拦截重排计算）
         let engineTuningCSS = """
         ms-chat-turn, .chat-turn, ms-prompt-node, .prompt-node, .history-container > *, ms-run-chunk, .chat-chunk {
             content-visibility: auto !important;
@@ -234,7 +247,7 @@ struct OptimizedWebView: NSViewRepresentable {
     func updateNSView(_ nsView: WKWebView, context: Context) {}
 }
 
-// MARK: - 动态 Liquid Glass 文字图标引擎 (亮色纯白，深色纯黑)
+// MARK: - 遵循 macOS 26 官方标准的 Liquid Glass 动态图标引擎
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -253,10 +266,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     static func applyLiquidGlassDockIcon() {
         let isDarkMode = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        NSApp.applicationIconImage = rendermacOS26TextIcon(isDark: isDarkMode)
+        NSApp.applicationIconImage = rendermacOS26LiquidGlassIcon(isDark: isDarkMode)
     }
 
-    private static func rendermacOS26TextIcon(isDark: Bool) -> NSImage {
+    // 核心重构：符合 macOS 26 Liquid Glass 真实光学标准的矢量图标
+    private static func rendermacOS26LiquidGlassIcon(isDark: Bool) -> NSImage {
         let canvasSize = NSSize(width: 512, height: 512)
         let iconImage = NSImage(size: canvasSize)
 
@@ -269,49 +283,65 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let baseRect = CGRect(x: 48, y: 48, width: 416, height: 416)
         let squirclePath = CGPath(roundedRect: baseRect, cornerWidth: 104, cornerHeight: 104, transform: nil)
 
-        // 1. 拟态背光投影
+        // 1. 拟态空间背光漫反射阴影 (Ambient Occlusion)
         ctx.saveGState()
-        let shadowColor = isDark ? NSColor.black.withAlphaComponent(0.48).cgColor : NSColor.black.withAlphaComponent(0.16).cgColor
-        ctx.setShadow(offset: CGSize(width: 0, height: -14), blur: 30, color: shadowColor)
+        let shadowColor = isDark ? NSColor.black.withAlphaComponent(0.40).cgColor : NSColor.black.withAlphaComponent(0.16).cgColor
+        ctx.setShadow(offset: CGSize(width: 0, height: -14), blur: 28, color: shadowColor)
         ctx.addPath(squirclePath)
         ctx.fillPath()
         ctx.restoreGState()
 
-        // 2. 底座主体（亮色纯白，深色纯黑）
+        // 2. 液体玻璃底座主体 (Liquid Glass Base)
         ctx.saveGState()
         ctx.addPath(squirclePath)
         ctx.clip()
 
+        let rgbSpace = CGColorSpaceCreateDeviceRGB()
+
         if isDark {
-            // 深色模式：黑曜石沉浸质感
-            let space = CGColorSpaceCreateDeviceRGB()
-            let darkColors = [
-                NSColor(red: 0.12, green: 0.13, blue: 0.18, alpha: 0.90).cgColor,
-                NSColor(red: 0.04, green: 0.04, blue: 0.07, alpha: 0.98).cgColor
+            // macOS 26 暗黑模式：黑曜烟熏琉璃渐变（绝非死黑，而是深空蓝灰到深黑曜）
+            let obsidianColors = [
+                NSColor(red: 0.12, green: 0.14, blue: 0.19, alpha: 0.96).cgColor,
+                NSColor(red: 0.08, green: 0.09, blue: 0.13, alpha: 0.98).cgColor,
+                NSColor(red: 0.05, green: 0.06, blue: 0.08, alpha: 1.00).cgColor
             ]
-            if let grad = CGGradient(colorsSpace: space, colors: darkColors as CFArray, locations: [0.0, 1.0]) {
+            if let grad = CGGradient(colorsSpace: rgbSpace, colors: obsidianColors as CFArray, locations: [0.0, 0.45, 1.0]) {
                 ctx.drawLinearGradient(grad, start: CGPoint(x: 256, y: 464), end: CGPoint(x: 256, y: 48), options: [])
             }
+
+            // 内部焦散微光（Caustic Glow）：注入类似“无边记”与“家庭”的深邃天体蓝光微晕
+            let glowCenter = CGPoint(x: 256, y: 256)
+            let glowColors = [
+                NSColor(red: 0.25, green: 0.40, blue: 0.70, alpha: 0.14).cgColor,
+                NSColor(red: 0.10, green: 0.15, blue: 0.35, alpha: 0.00).cgColor
+            ]
+            if let radialGrad = CGGradient(colorsSpace: rgbSpace, colors: glowColors as CFArray, locations: [0.0, 1.0]) {
+                ctx.drawRadialGradient(radialGrad, startCenter: glowCenter, startRadius: 10, endCenter: glowCenter, endRadius: 180, options: [])
+            }
         } else {
-            // 亮色模式：和 Gemini 图标一致的纯净实体白
+            // 亮色模式：实体纯净白底
             ctx.setFillColor(NSColor.white.cgColor)
             ctx.fill(baseRect)
         }
 
-        // 3. 边缘微米级高光/边框
+        // 3. macOS 26 标志性的天光折射高光（Liquid Specular Rim）
         let rimPath = CGPath(roundedRect: baseRect.insetBy(dx: 2, dy: 2), cornerWidth: 102, cornerHeight: 102, transform: nil)
-        ctx.setLineWidth(2.0)
-        let rimColor = isDark ? NSColor.white.withAlphaComponent(0.30).cgColor : NSColor.black.withAlphaComponent(0.06).cgColor
-        ctx.setStrokeColor(rimColor)
+        ctx.setLineWidth(2.2)
+        if isDark {
+            // 上亮下暗的物理天光折射
+            ctx.setStrokeColor(NSColor.white.withAlphaComponent(0.24).cgColor)
+        } else {
+            ctx.setStrokeColor(NSColor.black.withAlphaComponent(0.06).cgColor)
+        }
         ctx.addPath(rimPath)
         ctx.strokePath()
 
-        // 4. 三排文字排版
+        // 4. 三排文字排版（带微弱景深）
         let pStyle = NSMutableParagraphStyle()
         pStyle.alignment = .center
 
         // 第一排: Google
-        let googleColor = isDark ? NSColor(white: 0.92, alpha: 1.0) : NSColor(white: 0.08, alpha: 1.0)
+        let googleColor = isDark ? NSColor(white: 0.94, alpha: 1.0) : NSColor(white: 0.08, alpha: 1.0)
         let googleAttrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 66, weight: .heavy),
             .foregroundColor: googleColor,
@@ -331,7 +361,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         "AI".draw(in: CGRect(x: 48, y: 206, width: 416, height: 106), withAttributes: aiAttrs)
 
         // 第三排: Studio
-        let studioColor = isDark ? NSColor(white: 0.88, alpha: 1.0) : NSColor(white: 0.12, alpha: 1.0)
+        let studioColor = isDark ? NSColor(white: 0.90, alpha: 1.0) : NSColor(white: 0.12, alpha: 1.0)
         let studioAttrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 72, weight: .heavy),
             .foregroundColor: studioColor,
