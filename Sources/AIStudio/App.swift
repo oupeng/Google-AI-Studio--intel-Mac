@@ -132,7 +132,7 @@ final class LocalizedWKWebView: WKWebView {
     }
 }
 
-// MARK: - WebKit 调优管理器（深度静音日志 + 异步渲染）
+// MARK: - WebKit 调优管理器
 @MainActor
 final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     var webView: LocalizedWKWebView!
@@ -146,7 +146,7 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
 
         let userContent = WKUserContentController()
 
-        // 核心优化 1：静默处理打字时高频触发的 play.google.com/log，根除控制台反复抛错和重试
+        // 屏蔽 play.google.com/log 网络报错重试
         let muteLoggerScriptSource = """
         (function() {
             const originalFetch = window.fetch;
@@ -161,15 +161,13 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         let muteScript = WKUserScript(source: muteLoggerScriptSource, injectionTime: .atDocumentStart, forMainFrameOnly: false)
         userContent.addUserScript(muteScript)
 
-        // 核心优化 2：输入区层级固化与长对话虚拟化
+        // 视口外历史跳过排版 + 输入框排版隔离（放行数据流，拦截重排计算）
         let engineTuningCSS = """
-        /* 视口外历史跳过排版 */
         ms-chat-turn, .chat-turn, ms-prompt-node, .prompt-node, .history-container > *, ms-run-chunk, .chat-chunk {
             content-visibility: auto !important;
             contain-intrinsic-size: 80px 240px !important;
         }
 
-        /* 输入框与其外层容器排版锁死 */
         textarea, [contenteditable="true"], .prompt-editor, ms-prompt-editor, [role="textbox"], .input-container {
             contain: layout style paint !important;
             spellcheck: false !important;
@@ -204,7 +202,6 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         self.webView.navigationDelegate = self
         self.webView.uiDelegate = self
 
-        // 核心优化 3：开启 Intel 核显 CoreAnimation 异步绘制
         self.webView.wantsLayer = true
         self.webView.layer?.drawsAsynchronously = true
 
@@ -237,7 +234,7 @@ struct OptimizedWebView: NSViewRepresentable {
     func updateNSView(_ nsView: WKWebView, context: Context) {}
 }
 
-// MARK: - 动态 Liquid Glass 文字图标引擎
+// MARK: - 动态 Liquid Glass 文字图标引擎 (亮色纯白，深色纯黑)
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -272,36 +269,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let baseRect = CGRect(x: 48, y: 48, width: 416, height: 416)
         let squirclePath = CGPath(roundedRect: baseRect, cornerWidth: 104, cornerHeight: 104, transform: nil)
 
-        // 1. 拟态背光漫反射阴影
+        // 1. 拟态背光投影
         ctx.saveGState()
-        let shadowColor = isDark ? NSColor.black.withAlphaComponent(0.48).cgColor : NSColor.black.withAlphaComponent(0.22).cgColor
-        ctx.setShadow(offset: CGSize(width: 0, height: -16), blur: 36, color: shadowColor)
+        let shadowColor = isDark ? NSColor.black.withAlphaComponent(0.48).cgColor : NSColor.black.withAlphaComponent(0.16).cgColor
+        ctx.setShadow(offset: CGSize(width: 0, height: -14), blur: 30, color: shadowColor)
         ctx.addPath(squirclePath)
         ctx.fillPath()
         ctx.restoreGState()
 
-        // 2. 液体玻璃主体底座
+        // 2. 底座主体（亮色纯白，深色纯黑）
         ctx.saveGState()
         ctx.addPath(squirclePath)
         ctx.clip()
 
-        let rgbSpace = CGColorSpaceCreateDeviceRGB()
-        let glassGradientColors = isDark ? [
-            NSColor(red: 0.12, green: 0.13, blue: 0.18, alpha: 0.88).cgColor,
-            NSColor(red: 0.04, green: 0.04, blue: 0.07, alpha: 0.96).cgColor
-        ] : [
-            NSColor(red: 0.97, green: 0.98, blue: 1.00, alpha: 0.92).cgColor,
-            NSColor(red: 0.84, green: 0.88, blue: 0.96, alpha: 0.84).cgColor
-        ]
-
-        if let glassGrad = CGGradient(colorsSpace: rgbSpace, colors: glassGradientColors as CFArray, locations: [0.0, 1.0]) {
-            ctx.drawLinearGradient(glassGrad, start: CGPoint(x: 256, y: 464), end: CGPoint(x: 256, y: 48), options: [])
+        if isDark {
+            // 深色模式：黑曜石沉浸质感
+            let space = CGColorSpaceCreateDeviceRGB()
+            let darkColors = [
+                NSColor(red: 0.12, green: 0.13, blue: 0.18, alpha: 0.90).cgColor,
+                NSColor(red: 0.04, green: 0.04, blue: 0.07, alpha: 0.98).cgColor
+            ]
+            if let grad = CGGradient(colorsSpace: space, colors: darkColors as CFArray, locations: [0.0, 1.0]) {
+                ctx.drawLinearGradient(grad, start: CGPoint(x: 256, y: 464), end: CGPoint(x: 256, y: 48), options: [])
+            }
+        } else {
+            // 亮色模式：和 Gemini 图标一致的纯净实体白
+            ctx.setFillColor(NSColor.white.cgColor)
+            ctx.fill(baseRect)
         }
 
-        // 3. 菲涅尔边缘高光环
-        let rimPath = CGPath(roundedRect: baseRect.insetBy(dx: 3, dy: 3), cornerWidth: 101, cornerHeight: 101, transform: nil)
-        ctx.setLineWidth(2.5)
-        let rimColor = isDark ? NSColor.white.withAlphaComponent(0.32).cgColor : NSColor.white.withAlphaComponent(0.85).cgColor
+        // 3. 边缘微米级高光/边框
+        let rimPath = CGPath(roundedRect: baseRect.insetBy(dx: 2, dy: 2), cornerWidth: 102, cornerHeight: 102, transform: nil)
+        ctx.setLineWidth(2.0)
+        let rimColor = isDark ? NSColor.white.withAlphaComponent(0.30).cgColor : NSColor.black.withAlphaComponent(0.06).cgColor
         ctx.setStrokeColor(rimColor)
         ctx.addPath(rimPath)
         ctx.strokePath()
@@ -311,27 +311,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pStyle.alignment = .center
 
         // 第一排: Google
+        let googleColor = isDark ? NSColor(white: 0.92, alpha: 1.0) : NSColor(white: 0.08, alpha: 1.0)
         let googleAttrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 66, weight: .heavy),
-            .foregroundColor: isDark ? NSColor(white: 0.92, alpha: 1.0) : NSColor(red: 0.20, green: 0.22, blue: 0.28, alpha: 1.0),
+            .foregroundColor: googleColor,
             .paragraphStyle: pStyle,
             .kern: 0.2
         ]
         "Google".draw(in: CGRect(x: 48, y: 320, width: 416, height: 76), withAttributes: googleAttrs)
 
         // 第二排: AI
+        let aiColor = isDark ? NSColor.white : NSColor.black
         let aiAttrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 96, weight: .black),
-            .foregroundColor: isDark ? NSColor.white : NSColor(red: 0.06, green: 0.08, blue: 0.14, alpha: 1.0),
+            .foregroundColor: aiColor,
             .paragraphStyle: pStyle,
             .kern: 2.5
         ]
         "AI".draw(in: CGRect(x: 48, y: 206, width: 416, height: 106), withAttributes: aiAttrs)
 
         // 第三排: Studio
+        let studioColor = isDark ? NSColor(white: 0.88, alpha: 1.0) : NSColor(white: 0.12, alpha: 1.0)
         let studioAttrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 72, weight: .heavy),
-            .foregroundColor: isDark ? NSColor(white: 0.88, alpha: 1.0) : NSColor(red: 0.26, green: 0.29, blue: 0.36, alpha: 1.0),
+            .foregroundColor: studioColor,
             .paragraphStyle: pStyle,
             .kern: 0.2
         ]
