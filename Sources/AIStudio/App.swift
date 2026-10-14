@@ -132,7 +132,7 @@ final class LocalizedWKWebView: WKWebView {
     }
 }
 
-// MARK: - WebKit 调优管理器（集成 GitHub 开源架构级别的零延迟优化引擎）
+// MARK: - WebKit 调优管理器（修复 URL 实例漏洞 + 自启动 DOM 裁剪）
 @MainActor
 final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     var webView: LocalizedWKWebView!
@@ -146,23 +146,43 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
 
         let userContent = WKUserContentController()
 
-        // 1. 深度静默日志拦截脚本
+        // 1. 全光谱网络拦截器：兼容 String、URL 实例、Request 实例以及 XHR
         let muteLoggerScriptSource = """
         (function() {
             function isLogUrl(input) {
-                if (typeof input === 'string') return input.indexOf('play.google.com/log') !== -1;
-                if (input && typeof input.url === 'string') return input.url.indexOf('play.google.com/log') !== -1;
-                return false;
+                if (!input) return false;
+                try {
+                    let str = '';
+                    if (typeof input === 'string') {
+                        str = input;
+                    } else if (input.href && typeof input.href === 'string') {
+                        // 覆盖 URL 实例
+                        str = input.href;
+                    } else if (input.url && typeof input.url === 'string') {
+                        // 覆盖 Request 实例
+                        str = input.url;
+                    } else {
+                        str = String(input);
+                    }
+                    return str.indexOf('play.google.com/log') !== -1;
+                } catch (e) {
+                    return false;
+                }
             }
 
+            // 拦截 Fetch API
             const originalFetch = window.fetch;
             window.fetch = function(resource, init) {
                 if (isLogUrl(resource)) {
-                    return Promise.resolve(new Response(JSON.stringify({}), { status: 200 }));
+                    return Promise.resolve(new Response(JSON.stringify({}), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    }));
                 }
                 return originalFetch.apply(this, arguments);
             };
 
+            // 拦截 Beacon API
             if (navigator.sendBeacon) {
                 const originalBeacon = navigator.sendBeacon;
                 navigator.sendBeacon = function(url, data) {
@@ -170,25 +190,44 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                     return originalBeacon.apply(this, arguments);
                 };
             }
+
+            // 拦截 XMLHttpRequest
+            const origOpen = XMLHttpRequest.prototype.open;
+            XMLHttpRequest.prototype.open = function(method, url) {
+                if (isLogUrl(url)) {
+                    this._isMutedLog = true;
+                }
+                return origOpen.apply(this, arguments);
+            };
+            const origSend = XMLHttpRequest.prototype.send;
+            XMLHttpRequest.prototype.send = function() {
+                if (this._isMutedLog) {
+                    Object.defineProperty(this, 'readyState', { value: 4 });
+                    Object.defineProperty(this, 'status', { value: 200 });
+                    Object.defineProperty(this, 'responseText', { value: '{}' });
+                    if (typeof this.onload === 'function') this.onload(new Event('load'));
+                    return;
+                }
+                return origSend.apply(this, arguments);
+            };
         })();
         """
         userContent.addUserScript(WKUserScript(source: muteLoggerScriptSource, injectionTime: .atDocumentStart, forMainFrameOnly: false))
 
-        // 2. GitHub 开源级核心优化引擎：DOM 智能裁剪 + Angular 脏检查阻断
+        // 2. 自启动式 DOM 裁剪引擎（修复 DOMContentLoaded 错过时机的生命周期问题）
         let githubOptimizerEngine = """
         (function() {
-            // 只保留最新的 6 个消息回合在 DOM 中处于活跃渲染，陈旧回合挂载 display: none 避开 Angular 脏检查
             const MAX_ACTIVE_TURNS = 6;
             let pruneTimer = null;
 
             function optimizeDOMTree() {
-                const turns = document.querySelectorAll('ms-chat-turn');
+                // 覆盖所有的对话回合与节点
+                const turns = document.querySelectorAll('ms-chat-turn, .chat-turn, ms-prompt-node, .prompt-node');
                 if (!turns || turns.length <= MAX_ACTIVE_TURNS) return;
 
                 const cutoffIndex = turns.length - MAX_ACTIVE_TURNS;
                 for (let i = 0; i < turns.length; i++) {
                     if (i < cutoffIndex) {
-                        // 隐藏旧节点：切断 Angular Zone.js 在打字时的全量树遍历
                         if (turns[i].style.display !== 'none') {
                             turns[i].style.display = 'none';
                         }
@@ -200,29 +239,37 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                 }
             }
 
-            // 监听 DOM 变动与页面滚动
             const observer = new MutationObserver(() => {
                 if (pruneTimer) clearTimeout(pruneTimer);
-                pruneTimer = setTimeout(optimizeDOMTree, 300);
+                pruneTimer = setTimeout(optimizeDOMTree, 250);
             });
 
-            window.addEventListener('DOMContentLoaded', () => {
-                observer.observe(document.body, { childList: true, subtree: true });
-                setInterval(optimizeDOMTree, 2000);
-            });
+            function startEngine() {
+                const target = document.body || document.documentElement;
+                if (target) {
+                    observer.observe(target, { childList: true, subtree: true });
+                    setInterval(optimizeDOMTree, 1500);
+                    optimizeDOMTree();
+                }
+            }
+
+            // 无论页面加载处于何种阶段，保证百分百启动
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', startEngine);
+            } else {
+                startEngine();
+            }
         })();
         """
         userContent.addUserScript(WKUserScript(source: githubOptimizerEngine, injectionTime: .atDocumentEnd, forMainFrameOnly: false))
 
-        // 3. 增强版 CSS 隔离与代码块优化
+        // 3. 增强版 CSS 隔离
         let advancedTuningCSS = """
-        /* 视口外节点深度虚拟化 */
         ms-chat-turn, .chat-turn, ms-prompt-node, .prompt-node, .history-container > *, ms-run-chunk, .chat-chunk {
             content-visibility: auto !important;
             contain-intrinsic-size: 80px 240px !important;
         }
 
-        /* 输入框与其外层容器排版锁死 */
         textarea, [contenteditable="true"], .prompt-editor, ms-prompt-editor, [role="textbox"], .input-container {
             contain: layout style paint !important;
             spellcheck: false !important;
@@ -231,7 +278,6 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
             transform: translateZ(0) !important;
         }
 
-        /* 隐藏非活跃代码块的过度重排 */
         pre code {
             text-rendering: optimizeSpeed !important;
         }
