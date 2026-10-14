@@ -57,8 +57,6 @@ struct WindowFrameAccessor: NSViewRepresentable {
             if let window = view.window {
                 window.setFrameAutosaveName("AIStudioMainWindowAutosaveFrame")
                 window.isRestorable = true
-
-                // 针对外接 4K 显示器核心优化：关闭非全屏状态下吃显存带宽的桌面 Alpha 混合
                 window.isOpaque = true
                 window.backgroundColor = NSColor(red: 0.10, green: 0.11, blue: 0.14, alpha: 1.0)
             }
@@ -152,7 +150,7 @@ final class LocalizedWKWebView: WKWebView {
     }
 }
 
-// MARK: - WebKit 调优管理器（100% 官方安全公有 API，杜绝 KVC 闪退）
+// MARK: - WebKit 调优管理器（常驻后台全自动滑动窗口引擎）
 @MainActor
 final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     var webView: LocalizedWKWebView!
@@ -165,7 +163,7 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
 
         let userContent = WKUserContentController()
 
-        // 1. 原型链级全量网络拦截器
+        // 1. 全量网络日志屏蔽
         let protoMuterScript = """
         (function() {
             function isLogUrl(input) {
@@ -226,67 +224,100 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         """
         userContent.addUserScript(WKUserScript(source: protoMuterScript, injectionTime: .atDocumentStart, forMainFrameOnly: false))
 
-        // 2. DOM 裁剪自启动引擎
-        let domOptimizerEngine = """
+        // 2. 自动化常驻后台的 DOM 裁剪引擎 + 顶部“一键展开/收起历史”按钮
+        let autoEngineScript = """
         (function() {
-            const MAX_ACTIVE_TURNS = 6;
-            let pruneTimer = null;
-            let lastPrunedCount = -1;
+            const MAX_VISIBLE = 6;
+            let userExpanded = false;
+            let debounceTimer = null;
 
-            function optimizeDOMTree() {
-                const turns = document.querySelectorAll('ms-chat-turn, .chat-turn, ms-prompt-node, .prompt-node');
-                if (!turns || turns.length <= MAX_ACTIVE_TURNS) return;
-
-                const cutoffIndex = turns.length - MAX_ACTIVE_TURNS;
-                let pruned = 0;
-                for (let i = 0; i < turns.length; i++) {
-                    if (i < cutoffIndex) {
-                        if (turns[i].style.display !== 'none') {
-                            turns[i].style.display = 'none';
-                            pruned++;
-                        }
-                    } else {
-                        if (turns[i].style.display === 'none') {
-                            turns[i].style.display = '';
-                        }
-                    }
+            function autoOptimize() {
+                const items = document.querySelectorAll('ms-chat-turn, .chat-turn, ms-prompt-node, .prompt-node, mat-expansion-panel');
+                if (!items || items.length <= MAX_VISIBLE) {
+                    removeExpandBar();
+                    return;
                 }
 
-                if (pruned > 0 && lastPrunedCount !== cutoffIndex) {
-                    lastPrunedCount = cutoffIndex;
-                    console.info(
-                        `%c⚡ [AIStudio 引擎生效] 已隐藏前 ${cutoffIndex} 轮历史 DOM，当前视口活跃回合: ${MAX_ACTIVE_TURNS}`,
-                        'color: #00ff88; font-weight: bold;'
-                    );
+                const cutoff = items.length - MAX_VISIBLE;
+
+                if (!userExpanded) {
+                    // 全自动折叠超额面板，阻断 Angular Zone.js 扫描
+                    for (let i = 0; i < cutoff; i++) {
+                        items[i].style.setProperty('display', 'none', 'important');
+                    }
+                    for (let i = cutoff; i < items.length; i++) {
+                        items[i].style.removeProperty('display');
+                    }
+                    renderExpandBar(cutoff, items[cutoff]);
+                } else {
+                    // 用户点击展开看历史时的处理
+                    for (let i = 0; i < items.length; i++) {
+                        items[i].style.removeProperty('display');
+                    }
+                    renderExpandBar(cutoff, items[0], true);
                 }
             }
 
+            // 在聊天内容上方插入优雅的展开/收起控制条
+            function renderExpandBar(hiddenCount, referenceNode, isExpanded) {
+                if (!referenceNode || !referenceNode.parentNode) return;
+
+                let bar = document.getElementById('aistudio-history-toggle-bar');
+                if (!bar) {
+                    bar = document.createElement('div');
+                    bar.id = 'aistudio-history-toggle-bar';
+                    bar.style.cssText = 'text-align: center; padding: 10px 14px; margin: 16px auto; cursor: pointer; color: #8ab4f8; font-size: 13px; font-weight: 500; background: rgba(138, 180, 248, 0.08); border-radius: 10px; border: 1px dashed rgba(138, 180, 248, 0.35); max-width: 600px; transition: all 0.2s; user-select: none;';
+                    bar.onmouseover = () => bar.style.background = 'rgba(138, 180, 248, 0.16)';
+                    bar.onmouseout = () => bar.style.background = 'rgba(138, 180, 248, 0.08)';
+                    bar.onclick = () => {
+                        userExpanded = !userExpanded;
+                        autoOptimize();
+                    };
+                    referenceNode.parentNode.insertBefore(bar, referenceNode);
+                }
+
+                if (isExpanded) {
+                    bar.innerHTML = '⚡ <b>已展开全部历史</b> (点击重新折叠以恢复打字极速)';
+                    bar.style.borderColor = '#00ff88';
+                    bar.style.color = '#00ff88';
+                } else {
+                    bar.innerHTML = `📜 <b>已自动折叠更早的 ${hiddenCount} 条历史</b> (点击展开回看全部，平时折叠保持打字极速)`;
+                    bar.style.borderColor = 'rgba(138, 180, 248, 0.35)';
+                    bar.style.color = '#8ab4f8';
+                }
+            }
+
+            function removeExpandBar() {
+                const bar = document.getElementById('aistudio-history-toggle-bar');
+                if (bar) bar.remove();
+            }
+
             const observer = new MutationObserver(() => {
-                if (pruneTimer) clearTimeout(pruneTimer);
-                pruneTimer = setTimeout(optimizeDOMTree, 250);
+                if (debounceTimer) clearTimeout(debounceTimer);
+                debounceTimer = setTimeout(autoOptimize, 300);
             });
 
-            function startEngine() {
+            function start() {
                 const target = document.body || document.documentElement;
                 if (target) {
                     observer.observe(target, { childList: true, subtree: true });
-                    setInterval(optimizeDOMTree, 1500);
-                    optimizeDOMTree();
+                    setInterval(autoOptimize, 2000);
+                    autoOptimize();
                 }
             }
 
             if (document.readyState === 'loading') {
-                document.addEventListener('DOMContentLoaded', startEngine);
+                document.addEventListener('DOMContentLoaded', start);
             } else {
-                startEngine();
+                start();
             }
         })();
         """
-        userContent.addUserScript(WKUserScript(source: domOptimizerEngine, injectionTime: .atDocumentEnd, forMainFrameOnly: false))
+        userContent.addUserScript(WKUserScript(source: autoEngineScript, injectionTime: .atDocumentEnd, forMainFrameOnly: false))
 
-        // 3. 增强版 CSS 纯排版隔离（不带 translateZ 以防 4K 栅格化暴击）
+        // 3. 增强版 CSS 纯排版隔离
         let advancedTuningCSS = """
-        ms-chat-turn, .chat-turn, ms-prompt-node, .prompt-node, .history-container > *, ms-run-chunk, .chat-chunk {
+        ms-chat-turn, .chat-turn, ms-prompt-node, .prompt-node, .history-container > *, ms-run-chunk, .chat-chunk, mat-expansion-panel {
             content-visibility: auto !important;
             contain-intrinsic-size: 80px 240px !important;
         }
@@ -320,7 +351,6 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         self.webView.navigationDelegate = self
         self.webView.uiDelegate = self
 
-        // 官方安全公有 API
         self.webView.isInspectable = true
         if #available(macOS 12.0, *) {
             self.webView.underPageBackgroundColor = NSColor(red: 0.10, green: 0.11, blue: 0.14, alpha: 1.0)
