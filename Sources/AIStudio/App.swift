@@ -49,7 +49,7 @@ struct AIStudioApp: App {
     }
 }
 
-// MARK: - 原生窗口状态与实体化加速器（消灭非全屏阴影重排）
+// MARK: - 原生窗口状态与 4K 实体化优化器
 struct WindowFrameAccessor: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
@@ -58,7 +58,7 @@ struct WindowFrameAccessor: NSViewRepresentable {
                 window.setFrameAutosaveName("AIStudioMainWindowAutosaveFrame")
                 window.isRestorable = true
 
-                // 核心突破点 1：将窗口强行实体化！关闭非全屏状态下极度吃 CPU 的桌面 Alpha 混合与动态阴影计算
+                // 针对外接 4K 显示器核心优化：关闭非全屏状态下吃显存带宽的桌面 Alpha 混合
                 window.isOpaque = true
                 window.backgroundColor = NSColor(red: 0.10, green: 0.11, blue: 0.14, alpha: 1.0)
             }
@@ -152,7 +152,7 @@ final class LocalizedWKWebView: WKWebView {
     }
 }
 
-// MARK: - WebKit 调优管理器（降伏 37.4% 绘图耗时 + 原型链日志封锁）
+// MARK: - WebKit 调优管理器（100% 官方安全公有 API，杜绝 KVC 闪退）
 @MainActor
 final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     var webView: LocalizedWKWebView!
@@ -162,15 +162,10 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
         config.preferences.javaScriptCanOpenWindowsAutomatically = true
-        config.preferences.setValue(true, forKey: "developerExtrasEnabled")
-
-        // 核心突破点 2：在 AppKit 引擎底层彻底关掉拼写和语法 IPC 通信
-        config.preferences.setValue(false, forKey: "continuousSpellCheckingEnabled")
-        config.preferences.setValue(false, forKey: "grammarCheckingEnabled")
 
         let userContent = WKUserContentController()
 
-        // 核心突破点 3：原型链级全量拦截，击穿 RxJS 订阅调用
+        // 1. 原型链级全量网络拦截器
         let protoMuterScript = """
         (function() {
             function isLogUrl(input) {
@@ -192,7 +187,6 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                 }
             }
 
-            // 1. 原型链级封堵 sendBeacon
             if (window.Navigator && Navigator.prototype) {
                 const origProtoBeacon = Navigator.prototype.sendBeacon;
                 Navigator.prototype.sendBeacon = function(url, data) {
@@ -201,7 +195,6 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                 };
             }
 
-            // 2. 封堵 fetch
             const originalFetch = window.fetch;
             window.fetch = function(resource, init) {
                 if (isLogUrl(resource)) {
@@ -213,7 +206,6 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                 return originalFetch.apply(this, arguments);
             };
 
-            // 3. 封堵 XHR 原型链
             const origOpen = XMLHttpRequest.prototype.open;
             XMLHttpRequest.prototype.open = function(method, url) {
                 if (isLogUrl(url)) this._isMutedLog = true;
@@ -234,7 +226,7 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         """
         userContent.addUserScript(WKUserScript(source: protoMuterScript, injectionTime: .atDocumentStart, forMainFrameOnly: false))
 
-        // DOM 裁剪自启动引擎
+        // 2. DOM 裁剪自启动引擎
         let domOptimizerEngine = """
         (function() {
             const MAX_ACTIVE_TURNS = 6;
@@ -292,14 +284,13 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         """
         userContent.addUserScript(WKUserScript(source: domOptimizerEngine, injectionTime: .atDocumentEnd, forMainFrameOnly: false))
 
-        // 核心突破点 4：拆除输入框上的 translateZ(0)！保留纯排版隔离，斩断 37.4% 的绘图栅格化开销
+        // 3. 增强版 CSS 纯排版隔离（不带 translateZ 以防 4K 栅格化暴击）
         let advancedTuningCSS = """
         ms-chat-turn, .chat-turn, ms-prompt-node, .prompt-node, .history-container > *, ms-run-chunk, .chat-chunk {
             content-visibility: auto !important;
             contain-intrinsic-size: 80px 240px !important;
         }
 
-        /* 纯排版隔离，坚决不加 translateZ(0) 以免打字触发重绘栅格化暴击 */
         textarea, [contenteditable="true"], .prompt-editor, ms-prompt-editor, [role="textbox"], .input-container {
             contain: layout style paint !important;
             spellcheck: false !important;
@@ -329,13 +320,12 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         self.webView.navigationDelegate = self
         self.webView.uiDelegate = self
 
-        // 开启不透明背景渲染，规避透明通道重绘
-        self.webView.setValue(true, forKey: "drawsBackground")
+        // 官方安全公有 API
+        self.webView.isInspectable = true
         if #available(macOS 12.0, *) {
             self.webView.underPageBackgroundColor = NSColor(red: 0.10, green: 0.11, blue: 0.14, alpha: 1.0)
         }
 
-        self.webView.isInspectable = true
         self.webView.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0 Safari/605.1.15"
 
         let lastURLString = UserDefaults.standard.string(forKey: "AIStudioLastVisitedURL") ?? "https://aistudio.google.com"
@@ -406,7 +396,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let baseRect = CGRect(x: 48, y: 48, width: 416, height: 416)
         let squirclePath = CGPath(roundedRect: baseRect, cornerWidth: 104, cornerHeight: 104, transform: nil)
 
-        // 1. 拟态背光投影
         ctx.saveGState()
         let shadowColor = isDark ? NSColor.black.withAlphaComponent(0.40).cgColor : NSColor.black.withAlphaComponent(0.16).cgColor
         ctx.setShadow(offset: CGSize(width: 0, height: -14), blur: 28, color: shadowColor)
@@ -414,7 +403,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ctx.fillPath()
         ctx.restoreGState()
 
-        // 2. 液体玻璃主体底座
         ctx.saveGState()
         ctx.addPath(squirclePath)
         ctx.clip()
@@ -444,7 +432,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ctx.fill(baseRect)
         }
 
-        // 3. 菲涅尔边缘高光环
         let rimPath = CGPath(roundedRect: baseRect.insetBy(dx: 2, dy: 2), cornerWidth: 102, cornerHeight: 102, transform: nil)
         ctx.setLineWidth(2.2)
         if isDark {
@@ -455,7 +442,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ctx.addPath(rimPath)
         ctx.strokePath()
 
-        // 4. 三排文字排版
         let pStyle = NSMutableParagraphStyle()
         pStyle.alignment = .center
 
