@@ -18,6 +18,7 @@ struct AIStudioApp: App {
         WindowGroup {
             CleanAIStudioView()
                 .frame(minWidth: 1080, minHeight: 700)
+                .background(WindowFrameAccessor()) // 自动记录并恢复窗口尺寸与坐标
         }
         .windowStyle(.hiddenTitleBar)
         .commands {
@@ -46,6 +47,22 @@ struct AIStudioApp: App {
             }
         }
     }
+}
+
+// MARK: - 原生窗口状态持久化记忆器
+struct WindowFrameAccessor: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            if let window = view.window {
+                // 绑定持久化名称，系统自动保存/恢复尺寸与坐标
+                window.setFrameAutosaveName("AIStudioMainWindowAutosaveFrame")
+                window.isRestorable = true
+            }
+        }
+        return view
+    }
+    func updateNSView(_ nsView: NSView, context: Context) {}
 }
 
 // MARK: - 主视图
@@ -132,7 +149,7 @@ final class LocalizedWKWebView: WKWebView {
     }
 }
 
-// MARK: - WebKit 调优管理器（修复 URL 实例漏洞 + 自启动 DOM 裁剪）
+// MARK: - WebKit 调优管理器（带控制台可视化自检徽章）
 @MainActor
 final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     var webView: LocalizedWKWebView!
@@ -146,7 +163,7 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
 
         let userContent = WKUserContentController()
 
-        // 1. 全光谱网络拦截器：兼容 String、URL 实例、Request 实例以及 XHR
+        // 1. 全光谱网络拦截器
         let muteLoggerScriptSource = """
         (function() {
             function isLogUrl(input) {
@@ -156,10 +173,8 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                     if (typeof input === 'string') {
                         str = input;
                     } else if (input.href && typeof input.href === 'string') {
-                        // 覆盖 URL 实例
                         str = input.href;
                     } else if (input.url && typeof input.url === 'string') {
-                        // 覆盖 Request 实例
                         str = input.url;
                     } else {
                         str = String(input);
@@ -170,7 +185,6 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                 }
             }
 
-            // 拦截 Fetch API
             const originalFetch = window.fetch;
             window.fetch = function(resource, init) {
                 if (isLogUrl(resource)) {
@@ -182,7 +196,6 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                 return originalFetch.apply(this, arguments);
             };
 
-            // 拦截 Beacon API
             if (navigator.sendBeacon) {
                 const originalBeacon = navigator.sendBeacon;
                 navigator.sendBeacon = function(url, data) {
@@ -191,7 +204,6 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                 };
             }
 
-            // 拦截 XMLHttpRequest
             const origOpen = XMLHttpRequest.prototype.open;
             XMLHttpRequest.prototype.open = function(method, url) {
                 if (isLogUrl(url)) {
@@ -214,28 +226,38 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         """
         userContent.addUserScript(WKUserScript(source: muteLoggerScriptSource, injectionTime: .atDocumentStart, forMainFrameOnly: false))
 
-        // 2. 自启动式 DOM 裁剪引擎（修复 DOMContentLoaded 错过时机的生命周期问题）
+        // 2. 自启动 DOM 裁剪引擎（带控制台验证日志）
         let githubOptimizerEngine = """
         (function() {
             const MAX_ACTIVE_TURNS = 6;
             let pruneTimer = null;
+            let lastPrunedCount = -1;
 
             function optimizeDOMTree() {
-                // 覆盖所有的对话回合与节点
                 const turns = document.querySelectorAll('ms-chat-turn, .chat-turn, ms-prompt-node, .prompt-node');
                 if (!turns || turns.length <= MAX_ACTIVE_TURNS) return;
 
                 const cutoffIndex = turns.length - MAX_ACTIVE_TURNS;
+                let pruned = 0;
                 for (let i = 0; i < turns.length; i++) {
                     if (i < cutoffIndex) {
                         if (turns[i].style.display !== 'none') {
                             turns[i].style.display = 'none';
+                            pruned++;
                         }
                     } else {
                         if (turns[i].style.display === 'none') {
                             turns[i].style.display = '';
                         }
                     }
+                }
+
+                if (pruned > 0 && lastPrunedCount !== cutoffIndex) {
+                    lastPrunedCount = cutoffIndex;
+                    console.info(
+                        `%c⚡ [AIStudio 引擎生效] 已隐藏前 ${cutoffIndex} 轮历史 DOM，当前视口活跃回合: ${MAX_ACTIVE_TURNS}`,
+                        'color: #00ff88; font-weight: bold;'
+                    );
                 }
             }
 
@@ -250,10 +272,16 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                     observer.observe(target, { childList: true, subtree: true });
                     setInterval(optimizeDOMTree, 1500);
                     optimizeDOMTree();
+
+                    // 控制台可视化自检徽章
+                    console.log(
+                        '%c AIStudio 极速引擎 %c 视口裁剪: 运行中 | 排版隔离: 已生效 | 日志静默: 拦截中 ',
+                        'background: #1a73e8; color: #fff; padding: 3px 6px; border-radius: 4px 0 0 4px; font-weight: bold;',
+                        'background: #202124; color: #00ff88; padding: 3px 6px; border-radius: 0 4px 4px 0;'
+                    );
                 }
             }
 
-            // 无论页面加载处于何种阶段，保证百分百启动
             if (document.readyState === 'loading') {
                 document.addEventListener('DOMContentLoaded', startEngine);
             } else {
@@ -311,8 +339,18 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         self.webView.isInspectable = true
         self.webView.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0 Safari/605.1.15"
 
-        if let url = URL(string: "https://aistudio.google.com") {
-            self.webView.load(URLRequest(url: url))
+        // 会话记忆自动恢复：优先恢复上次编辑的具体 Prompt URL
+        let lastURLString = UserDefaults.standard.string(forKey: "AIStudioLastVisitedURL") ?? "https://aistudio.google.com"
+        let targetURL = URL(string: lastURLString) ?? URL(string: "https://aistudio.google.com")!
+        self.webView.load(URLRequest(url: targetURL))
+    }
+
+    // 记录用户正在访问的有效工作区 URL
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard let currentURL = webView.url?.absoluteString else { return }
+        // 排除登录和过渡跳转，仅记住真正的 AI Studio 会话
+        if !currentURL.contains("accounts.google.com") && !currentURL.contains("ServiceLogin") {
+            UserDefaults.standard.set(currentURL, forKey: "AIStudioLastVisitedURL")
         }
     }
 
@@ -388,7 +426,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let rgbSpace = CGColorSpaceCreateDeviceRGB()
 
         if isDark {
-            // 深色模式：黑曜烟熏琉璃渐变（绝非死黑）
+            // 深色模式：黑曜烟熏琉璃渐变
             let obsidianColors = [
                 NSColor(red: 0.12, green: 0.14, blue: 0.19, alpha: 0.96).cgColor,
                 NSColor(red: 0.08, green: 0.09, blue: 0.13, alpha: 0.98).cgColor,
