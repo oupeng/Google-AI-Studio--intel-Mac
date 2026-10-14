@@ -150,7 +150,7 @@ final class LocalizedWKWebView: WKWebView {
     }
 }
 
-// MARK: - WebKit 调优管理器（全面剔除 innerHTML 规避 Trusted Types 报错）
+// MARK: - WebKit 调优管理器（修复配置控制器未绑定 Bug）
 @MainActor
 final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     var webView: LocalizedWKWebView!
@@ -161,7 +161,8 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         config.websiteDataStore = .default()
         config.preferences.javaScriptCanOpenWindowsAutomatically = true
 
-        let userContent = WKUserContentController()
+        // 核心修复点：直接使用 config 自带的 userContentController，杜绝未挂载断链 Bug
+        let userContent = config.userContentController
 
         // 1. 原型链级网络日志屏蔽
         let protoMuterScript = """
@@ -224,7 +225,7 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         """
         userContent.addUserScript(WKUserScript(source: protoMuterScript, injectionTime: .atDocumentStart, forMainFrameOnly: false))
 
-        // 2. 100% 免疫 Trusted Types 的自动化裁剪与控制条渲染引擎
+        // 2. 自动化常驻后台的 DOM 裁剪引擎 + 顶部“一键展开/收起历史”按钮
         let safeEngineScript = """
         (function() {
             const MAX_VISIBLE = 6;
@@ -241,7 +242,6 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                 const cutoff = items.length - MAX_VISIBLE;
 
                 if (!userExpanded) {
-                    // 折叠多余面板
                     for (let i = 0; i < cutoff; i++) {
                         items[i].style.setProperty('display', 'none', 'important');
                     }
@@ -250,7 +250,6 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                     }
                     renderExpandBar(cutoff, items[cutoff], false);
                 } else {
-                    // 展开全部面板
                     for (let i = 0; i < items.length; i++) {
                         items[i].style.removeProperty('display');
                     }
@@ -258,7 +257,6 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                 }
             }
 
-            // 核心修复：纯 DOM + textContent 操作，绝对不碰 innerHTML，完美免疫 Trusted Types 拦截
             function renderExpandBar(hiddenCount, referenceNode, isExpanded) {
                 if (!referenceNode || !referenceNode.parentNode) return;
 
@@ -281,7 +279,7 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                     bar.style.borderColor = '#00ff88';
                     bar.style.color = '#00ff88';
                 } else {
-                    bar.textContent = `📜 已自动折叠更早的 ${hiddenCount} 条历史 (点击展开回看全部，平时折叠保持打字极速)`;
+                    bar.textContent = '📜 已自动折叠更早的 ' + hiddenCount + ' 条历史 (点击展开回看全部，平时折叠保持打字极速)';
                     bar.style.borderColor = 'rgba(138, 180, 248, 0.35)';
                     bar.style.color = '#8ab4f8';
                 }
@@ -303,6 +301,7 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                     observer.observe(target, { childList: true, subtree: true });
                     setInterval(autoOptimize, 2000);
                     autoOptimize();
+                    console.log('%c🚀 [AIStudio Native Engine] 自动折叠引擎与网络拦截器已装载就绪！', 'color: #00ff88; font-weight: bold; font-size: 12px;');
                 }
             }
 
