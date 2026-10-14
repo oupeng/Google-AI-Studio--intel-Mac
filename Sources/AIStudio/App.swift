@@ -150,7 +150,7 @@ final class LocalizedWKWebView: WKWebView {
     }
 }
 
-// MARK: - WebKit 调优管理器（安全无损版引擎）
+// MARK: - WebKit 调优管理器（全面剔除 innerHTML 规避 Trusted Types 报错）
 @MainActor
 final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     var webView: LocalizedWKWebView!
@@ -224,7 +224,7 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         """
         userContent.addUserScript(WKUserScript(source: protoMuterScript, injectionTime: .atDocumentStart, forMainFrameOnly: false))
 
-        // 2. 经过安全边界加固的常驻动态裁剪引擎（带一键展开/收起）
+        // 2. 100% 免疫 Trusted Types 的自动化裁剪与控制条渲染引擎
         let safeEngineScript = """
         (function() {
             const MAX_VISIBLE = 6;
@@ -250,7 +250,7 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                     }
                     renderExpandBar(cutoff, items[cutoff], false);
                 } else {
-                    // 展开全部面板供用户回看
+                    // 展开全部面板
                     for (let i = 0; i < items.length; i++) {
                         items[i].style.removeProperty('display');
                     }
@@ -258,6 +258,7 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                 }
             }
 
+            // 核心修复：纯 DOM + textContent 操作，绝对不碰 innerHTML，完美免疫 Trusted Types 拦截
             function renderExpandBar(hiddenCount, referenceNode, isExpanded) {
                 if (!referenceNode || !referenceNode.parentNode) return;
 
@@ -265,7 +266,7 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                 if (!bar) {
                     bar = document.createElement('div');
                     bar.id = 'aistudio-history-toggle-bar';
-                    bar.style.cssText = 'text-align: center; padding: 10px 14px; margin: 16px auto; cursor: pointer; color: #8ab4f8; font-size: 13px; font-weight: 500; background: rgba(138, 180, 248, 0.08); border-radius: 10px; border: 1px dashed rgba(138, 180, 248, 0.35); max-width: 600px; transition: background 0.2s; user-select: none;';
+                    bar.style.cssText = 'text-align: center; padding: 10px 14px; margin: 16px auto; cursor: pointer; color: #8ab4f8; font-size: 13px; font-weight: 600; background: rgba(138, 180, 248, 0.08); border-radius: 10px; border: 1px dashed rgba(138, 180, 248, 0.35); max-width: 620px; transition: background 0.2s; user-select: none;';
                     bar.onmouseover = () => bar.style.background = 'rgba(138, 180, 248, 0.16)';
                     bar.onmouseout = () => bar.style.background = 'rgba(138, 180, 248, 0.08)';
                     bar.onclick = () => {
@@ -276,11 +277,11 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                 }
 
                 if (isExpanded) {
-                    bar.innerHTML = '⚡ <b>已展开全部历史</b> (点击重新折叠以恢复打字极速)';
+                    bar.textContent = '⚡ 已展开全部历史 (点击重新折叠以恢复打字极速)';
                     bar.style.borderColor = '#00ff88';
                     bar.style.color = '#00ff88';
                 } else {
-                    bar.innerHTML = `📜 <b>已自动折叠更早的 ${hiddenCount} 条历史</b> (点击展开回看全部，平时折叠保持打字极速)`;
+                    bar.textContent = `📜 已自动折叠更早的 ${hiddenCount} 条历史 (点击展开回看全部，平时折叠保持打字极速)`;
                     bar.style.borderColor = 'rgba(138, 180, 248, 0.35)';
                     bar.style.color = '#8ab4f8';
                 }
@@ -314,14 +315,13 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         """
         userContent.addUserScript(WKUserScript(source: safeEngineScript, injectionTime: .atDocumentEnd, forMainFrameOnly: false))
 
-        // 3. 局部的纯排版隔离（不搞破坏下拉菜单的全局动画禁用，坚决不加 translateZ）
+        // 3. 增强版 CSS 纯排版隔离
         let advancedTuningCSS = """
         ms-chat-turn, .chat-turn, ms-prompt-node, .prompt-node, .history-container > *, ms-run-chunk, .chat-chunk, mat-expansion-panel {
             content-visibility: auto !important;
             contain-intrinsic-size: 80px 240px !important;
         }
 
-        /* 纯排版隔离，保护输入内容安全 */
         textarea, [contenteditable="true"], .prompt-editor, ms-prompt-editor, [role="textbox"], .input-container {
             contain: layout style paint !important;
             spellcheck: false !important;
@@ -329,7 +329,6 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
             autocapitalize: off !important;
         }
 
-        /* 仅在历史消息区域消除过渡，绝不破坏全局下拉框与加载动画 */
         .chat-history *, .prompt-history * {
             transition: none !important;
         }
