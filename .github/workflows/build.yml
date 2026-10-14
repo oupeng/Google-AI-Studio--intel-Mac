@@ -17,7 +17,7 @@ jobs:
             --arch x86_64 \
             -Xswiftc -target -Xswiftc x86_64-apple-macosx26.0
 
-      - name: Package Standalone App Bundle with Embedded AppIcon.icns
+      - name: Package Standalone App Bundle with Localization & AppIcon
         run: |
           APP_NAME="AIStudio"
           APP_DIR="$APP_NAME.app"
@@ -28,12 +28,16 @@ jobs:
           mkdir -p "$MACOS"
           mkdir -p "$RESOURCES"
 
-          # 拷贝编译好的二进制
+          # 1. 核心修复：创建简体中文语言包目录，通知 macOS 启用系统级中文环境
+          mkdir -p "$RESOURCES/zh-Hans.lproj"
+          mkdir -p "$RESOURCES/zh_CN.lproj"
+
+          # 拷贝二进制
           BIN_PATH=$(find .build -name "$APP_NAME" -type f -perm +111 | grep "release" | head -n 1)
           cp "$BIN_PATH" "$MACOS/$APP_NAME"
           chmod +x "$MACOS/$APP_NAME"
 
-          # 1. 动态生成 1024x1024 高清底图并导出为物理 AppIcon.icns
+          # 2. 导出物理 AppIcon.icns
           cat << 'EOF' > make_icns.swift
           import AppKit
 
@@ -105,7 +109,6 @@ jobs:
 
           swift make_icns.swift
 
-          # 生成符合 Apple 规范的 .iconset 尺寸集合
           mkdir -p AppIcon.iconset
           sips -z 16 16     base_1024.png --out AppIcon.iconset/icon_16x16.png
           sips -z 32 32     base_1024.png --out AppIcon.iconset/icon_16x16@2x.png
@@ -118,10 +121,9 @@ jobs:
           sips -z 512 512   base_1024.png --out AppIcon.iconset/icon_512x512.png
           cp base_1024.png AppIcon.iconset/icon_512x512@2x.png
 
-          # 使用 macOS 官方工具转换生成正式的 AppIcon.icns
           iconutil -c icns AppIcon.iconset -o "$RESOURCES/AppIcon.icns"
 
-          # 2. 注入 Info.plist 并明确指定图标文件
+          # 3. 注入支持简体中文的 Info.plist
           cat <<EOF > "$CONTENTS/Info.plist"
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -141,6 +143,15 @@ jobs:
               <string>AppIcon</string>
               <key>CFBundleIconName</key>
               <string>AppIcon</string>
+              <key>CFBundleDevelopmentRegion</key>
+              <string>zh_CN</string>
+              <key>CFBundleAllowMixedLocalizations</key>
+              <true/>
+              <key>CFBundleLocalizations</key>
+              <array>
+                  <string>zh-Hans</string>
+                  <string>zh_CN</string>
+              </array>
               <key>LSMinimumSystemVersion</key>
               <string>26.0</string>
               <key>NSHighResolutionCapable</key>
@@ -151,7 +162,6 @@ jobs:
           </plist>
           EOF
 
-          # 签名与压缩
           codesign --force --deep --sign - "$APP_DIR"
           zip -r -y "AIStudio-macOS26-Intel.zip" "$APP_DIR"
 
