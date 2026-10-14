@@ -150,7 +150,7 @@ final class LocalizedWKWebView: WKWebView {
     }
 }
 
-// MARK: - WebKit 调优管理器（修复配置控制器未绑定 Bug）
+// MARK: - WebKit 调优管理器（修复图标裁切 + 意图感知自动复位）
 @MainActor
 final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     var webView: LocalizedWKWebView!
@@ -161,7 +161,6 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         config.websiteDataStore = .default()
         config.preferences.javaScriptCanOpenWindowsAutomatically = true
 
-        // 核心修复点：直接使用 config 自带的 userContentController，杜绝未挂载断链 Bug
         let userContent = config.userContentController
 
         // 1. 原型链级网络日志屏蔽
@@ -225,14 +224,14 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         """
         userContent.addUserScript(WKUserScript(source: protoMuterScript, injectionTime: .atDocumentStart, forMainFrameOnly: false))
 
-        // 2. 自动化常驻后台的 DOM 裁剪引擎 + 顶部“一键展开/收起历史”按钮
-        let safeEngineScript = """
+        // 2. 打字意图感知自动复位引擎（翻阅放行，打字一瞬间自动收起提速）
+        let typingAwareEngineScript = """
         (function() {
             const MAX_VISIBLE = 6;
             let userExpanded = false;
             let debounceTimer = null;
 
-            function autoOptimize() {
+            function autoOptimize(forcePrune = false) {
                 const items = document.querySelectorAll('ms-chat-turn, .chat-turn, ms-prompt-node, .prompt-node, mat-expansion-panel');
                 if (!items || items.length <= MAX_VISIBLE) {
                     removeExpandBar();
@@ -241,7 +240,7 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
 
                 const cutoff = items.length - MAX_VISIBLE;
 
-                if (!userExpanded) {
+                if (forcePrune || !userExpanded) {
                     for (let i = 0; i < cutoff; i++) {
                         items[i].style.setProperty('display', 'none', 'important');
                     }
@@ -255,6 +254,21 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                     }
                     renderExpandBar(cutoff, items[0], true);
                 }
+            }
+
+            // 监听打字意图：光标回输入框或按键时，瞬间恢复极速
+            function bindTypingSensors() {
+                function triggerFastTypingMode(e) {
+                    const target = e.target;
+                    if (target && (target.tagName === 'TEXTAREA' || target.isContentEditable || target.getAttribute('role') === 'textbox' || target.closest('.input-container'))) {
+                        if (userExpanded) {
+                            userExpanded = false;
+                            autoOptimize(true);
+                        }
+                    }
+                }
+                document.addEventListener('focusin', triggerFastTypingMode, true);
+                document.addEventListener('keydown', triggerFastTypingMode, true);
             }
 
             function renderExpandBar(hiddenCount, referenceNode, isExpanded) {
@@ -275,11 +289,11 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                 }
 
                 if (isExpanded) {
-                    bar.textContent = '⚡ 已展开全部历史 (点击重新折叠以恢复打字极速)';
+                    bar.textContent = '⚡ 已展开全部历史 (点击此处或直接点击输入框打字以恢复极速)';
                     bar.style.borderColor = '#00ff88';
                     bar.style.color = '#00ff88';
                 } else {
-                    bar.textContent = '📜 已自动折叠更早的 ' + hiddenCount + ' 条历史 (点击展开回看全部，平时折叠保持打字极速)';
+                    bar.textContent = `📜 已自动折叠更早的 ${hiddenCount} 条历史 (点击展开回看全部，平时折叠保持打字极速)`;
                     bar.style.borderColor = 'rgba(138, 180, 248, 0.35)';
                     bar.style.color = '#8ab4f8';
                 }
@@ -292,16 +306,17 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
 
             const observer = new MutationObserver(() => {
                 if (debounceTimer) clearTimeout(debounceTimer);
-                debounceTimer = setTimeout(autoOptimize, 300);
+                debounceTimer = setTimeout(() => autoOptimize(false), 300);
             });
 
             function start() {
                 const target = document.body || document.documentElement;
                 if (target) {
                     observer.observe(target, { childList: true, subtree: true });
-                    setInterval(autoOptimize, 2000);
-                    autoOptimize();
-                    console.log('%c🚀 [AIStudio Native Engine] 自动折叠引擎与网络拦截器已装载就绪！', 'color: #00ff88; font-weight: bold; font-size: 12px;');
+                    setInterval(() => autoOptimize(false), 2000);
+                    bindTypingSensors();
+                    autoOptimize(false);
+                    console.log('%c🚀 [AIStudio Native Engine] 意图感知加速引擎已就绪！', 'color: #00ff88; font-weight: bold; font-size: 12px;');
                 }
             }
 
@@ -312,17 +327,19 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
             }
         })();
         """
-        userContent.addUserScript(WKUserScript(source: safeEngineScript, injectionTime: .atDocumentEnd, forMainFrameOnly: false))
+        userContent.addUserScript(WKUserScript(source: typingAwareEngineScript, injectionTime: .atDocumentEnd, forMainFrameOnly: false))
 
-        // 3. 增强版 CSS 纯排版隔离
-        let advancedTuningCSS = """
+        // 3. 关键修复：剔除 paint，增加 overflow: visible，绝不裁切消息框外的悬浮操作按钮
+        let nonClippingCSS = """
         ms-chat-turn, .chat-turn, ms-prompt-node, .prompt-node, .history-container > *, ms-run-chunk, .chat-chunk, mat-expansion-panel {
             content-visibility: auto !important;
             contain-intrinsic-size: 80px 240px !important;
+            overflow: visible !important; /* 关键：确保 Rerun 和铅笔悬浮工具栏完整显示 */
         }
 
+        /* 纯排版隔离：去掉 paint 属性，锁死重排的同时，坚决不裁切悬浮元素 */
         textarea, [contenteditable="true"], .prompt-editor, ms-prompt-editor, [role="textbox"], .input-container {
-            contain: layout style paint !important;
+            contain: layout style !important;
             spellcheck: false !important;
             autocorrect: off !important;
             autocapitalize: off !important;
@@ -333,7 +350,7 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         }
         """
 
-        let escapedCSS = advancedTuningCSS
+        let escapedCSS = nonClippingCSS
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "`", with: "\\`")
 
