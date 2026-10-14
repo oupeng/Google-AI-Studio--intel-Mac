@@ -20,7 +20,6 @@ struct AIStudioApp: App {
                 .frame(minWidth: 1080, minHeight: 700)
         }
         .windowStyle(.hiddenTitleBar)
-        // 增加原生快捷键与菜单命令支持
         .commands {
             CommandMenu("页面导航") {
                 Button("重新加载") {
@@ -49,14 +48,13 @@ struct AIStudioApp: App {
     }
 }
 
-// MARK: - 主视图（绑定快捷键监听）
+// MARK: - 主视图
 struct CleanAIStudioView: View {
     @StateObject private var model = WebViewModel()
 
     var body: some View {
         OptimizedWebView(model: model)
             .ignoresSafeArea()
-            // 兜底快捷键监听：保证无论焦点在哪，按 Cmd+R 都能即时刷新
             .background(
                 Group {
                     Button("") { model.webView.reload() }
@@ -81,10 +79,80 @@ struct CleanAIStudioView: View {
     }
 }
 
-// MARK: - WebKit 底层引擎调优
+// MARK: - 深度汉化版 WKWebView (接管右键菜单进行 100% 简体中文本地化)
+@MainActor
+final class LocalizedWKWebView: WKWebView {
+    // 菜单项英文 -> 简体中文对照字典
+    private let menuTranslations: [String: String] = [
+        "Inspect Element": "检查元素",
+        "Reload Page": "重新加载页面",
+        "Reload": "重新加载",
+        "Back": "后退",
+        "Forward": "前进",
+        "Stop": "停止",
+        "Copy": "拷贝",
+        "Cut": "剪切",
+        "Paste": "粘贴",
+        "Paste and Match Style": "粘贴并匹配样式",
+        "Select All": "全选",
+        "Open Link in New Window": "在新窗口中打开链接",
+        "Download Linked File": "下载链接的文件",
+        "Copy Link": "拷贝链接",
+        "Open Image in New Window": "在新窗口中打开图像",
+        "Download Image": "下载图像",
+        "Copy Image": "拷贝图像",
+        "Look Up": "查询",
+        "Translate": "翻译",
+        "Search with Google": "使用 Google 搜索",
+        "Speech": "语音",
+        "Start Speaking": "开始朗读",
+        "Stop Speaking": "停止朗读",
+        "Spelling and Grammar": "拼写和语法",
+        "Show Spelling and Grammar": "显示拼写和语法",
+        "Check Document Now": "立即检查文稿",
+        "Substitutions": "替换",
+        "Transformations": "转换",
+        "Make Upper Case": "变为大写",
+        "Make Lower Case": "变为小写",
+        "Capitalize": "首字母大写"
+    ]
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard let menu = super.menu(for: event) else { return nil }
+        localizeMenu(menu)
+        return menu
+    }
+
+    private func localizeMenu(_ menu: NSMenu) {
+        for item in menu.items {
+            let trimmedTitle = item.title.trimmingCharacters(in: .whitespaces)
+            
+            // 匹配字典进行精准汉化
+            if let localized = menuTranslations[trimmedTitle] {
+                item.title = localized
+            } else {
+                // 处理带引号的查询语句，如: Look Up "xxx"
+                if trimmedTitle.hasPrefix("Look Up ") {
+                    let term = String(trimmedTitle.dropFirst(8))
+                    item.title = "查询 \(term)"
+                } else if trimmedTitle.hasPrefix("Search with ") {
+                    let term = String(trimmedTitle.dropFirst(12))
+                    item.title = "在网页中搜索 \(term)"
+                }
+            }
+
+            // 递归汉化可能存在的子菜单
+            if let submenu = item.submenu {
+                localizeMenu(submenu)
+            }
+        }
+    }
+}
+
+// MARK: - WebKit 调优管理器
 @MainActor
 final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
-    var webView: WKWebView!
+    var webView: LocalizedWKWebView!
 
     override init() {
         super.init()
@@ -95,7 +163,6 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
 
         let userContent = WKUserContentController()
 
-        // 核心技术点：改用 textContent 赋值，彻底消除 TrustedHTML 报错，保证 CSS 100% 挂载生效
         let engineTuningCSS = """
         ms-chat-turn, .chat-turn, ms-prompt-node, .prompt-node, .history-container > *, ms-run-chunk, .chat-chunk {
             content-visibility: auto !important;
@@ -135,11 +202,11 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         userContent.addUserScript(cssScript)
         config.userContentController = userContent
 
-        self.webView = WKWebView(frame: .zero, configuration: config)
+        // 初始化继承自本地化右键类的实例
+        self.webView = LocalizedWKWebView(frame: .zero, configuration: config)
         self.webView.navigationDelegate = self
         self.webView.uiDelegate = self
 
-        // 开启检查器并绑定原生 Safari 27.0 UA
         self.webView.isInspectable = true
         self.webView.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0 Safari/605.1.15"
 
@@ -161,7 +228,7 @@ final class WebViewModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     }
 }
 
-// MARK: - AppKit 原生 WKWebView 承载
+// MARK: - AppKit 容器桥接
 @MainActor
 struct OptimizedWebView: NSViewRepresentable {
     @ObservedObject var model: WebViewModel
@@ -169,7 +236,7 @@ struct OptimizedWebView: NSViewRepresentable {
     func updateNSView(_ nsView: WKWebView, context: Context) {}
 }
 
-// MARK: - 动态 Liquid Glass 文字图标引擎（放大首尾两排）
+// MARK: - 动态 Liquid Glass 文字图标引擎
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -238,7 +305,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ctx.addPath(rimPath)
         ctx.strokePath()
 
-        // 4. 三排文字排版：Google 放大至 66pt，Studio 放大至 72pt
+        // 4. 三排文字排版
         let pStyle = NSMutableParagraphStyle()
         pStyle.alignment = .center
 
