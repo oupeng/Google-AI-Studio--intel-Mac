@@ -17,7 +17,7 @@ jobs:
             --arch x86_64 \
             -Xswiftc -target -Xswiftc x86_64-apple-macosx26.0
 
-      - name: Package Standalone App Bundle with Guaranteed Liquid Glass AppIcon
+      - name: Package Standalone App Bundle
         run: |
           APP_NAME="AIStudio"
           APP_DIR="$APP_NAME.app"
@@ -35,7 +35,7 @@ jobs:
           cp "$BIN_PATH" "$MACOS/$APP_NAME"
           chmod +x "$MACOS/$APP_NAME"
 
-          # 1. 采用无窗口依赖的 NSBitmapImageRep 离线渲染严格遵循 macOS 26 Liquid Glass 规范的 1024 高清图标
+          # 1. 采用离线位图生成纯白底实心矢量图作为默认物理 AppIcon.icns（确保未打开时是纯白图标）
           cat << 'EOF' > make_icns.swift
           import AppKit
 
@@ -62,59 +62,39 @@ jobs:
           let rect = CGRect(x: 96, y: 96, width: 832, height: 832)
           let squircle = CGPath(roundedRect: rect, cornerWidth: 208, cornerHeight: 208, transform: nil)
 
-          // 拟态柔和投影
+          // 拟态阴影
           cg.saveGState()
-          cg.setShadow(offset: CGSize(width: 0, height: -28), blur: 56, color: NSColor.black.withAlphaComponent(0.40).cgColor)
+          cg.setShadow(offset: CGSize(width: 0, height: -24), blur: 50, color: NSColor.black.withAlphaComponent(0.18).cgColor)
           cg.addPath(squircle)
           cg.fillPath()
           cg.restoreGState()
 
-          // 液体玻璃底座：黑曜烟熏深空渐变（绝非死黑）
+          // 实体纯白底座（确保未打开状态下与 Gemini 保持纯白一致）
           cg.saveGState()
           cg.addPath(squircle)
           cg.clip()
+          cg.setFillColor(NSColor.white.cgColor)
+          cg.fill(rect)
 
-          let space = CGColorSpaceCreateDeviceRGB()
-          let obsidianColors = [
-              NSColor(red: 0.12, green: 0.14, blue: 0.19, alpha: 0.96).cgColor,
-              NSColor(red: 0.08, green: 0.09, blue: 0.13, alpha: 0.98).cgColor,
-              NSColor(red: 0.05, green: 0.06, blue: 0.08, alpha: 1.00).cgColor
-          ]
-          if let grad = CGGradient(colorsSpace: space, colors: obsidianColors as CFArray, locations: [0.0, 0.45, 1.0]) {
-              cg.drawLinearGradient(grad, start: CGPoint(x: 512, y: 928), end: CGPoint(x: 512, y: 96), options: [])
-          }
-
-          // 内部焦散折射微光晕
-          let center = CGPoint(x: 512, y: 512)
-          let glowColors = [
-              NSColor(red: 0.25, green: 0.40, blue: 0.70, alpha: 0.14).cgColor,
-              NSColor(red: 0.10, green: 0.15, blue: 0.35, alpha: 0.00).cgColor
-          ]
-          if let radialGrad = CGGradient(colorsSpace: space, colors: glowColors as CFArray, locations: [0.0, 1.0]) {
-              cg.drawRadialGradient(radialGrad, startCenter: center, startRadius: 20, endCenter: center, endRadius: 360, options: [])
-          }
-
-          // 菲涅尔天光边缘高光
-          let rim = CGPath(roundedRect: rect.insetBy(dx: 4, dy: 4), cornerWidth: 204, cornerHeight: 204, transform: nil)
-          cg.setLineWidth(4.5)
-          cg.setStrokeColor(NSColor.white.withAlphaComponent(0.24).cgColor)
-          cg.addPath(rim)
+          // 细微边框
+          cg.setLineWidth(3.0)
+          cg.setStrokeColor(NSColor.black.withAlphaComponent(0.08).cgColor)
+          cg.addPath(squircle)
           cg.strokePath()
 
-          // 三排纯白文字排版
           let pStyle = NSMutableParagraphStyle()
           pStyle.alignment = .center
 
           let gAttrs: [NSAttributedString.Key: Any] = [
               .font: NSFont.systemFont(ofSize: 132, weight: .heavy),
-              .foregroundColor: NSColor(white: 0.94, alpha: 1.0),
+              .foregroundColor: NSColor(white: 0.08, alpha: 1.0),
               .paragraphStyle: pStyle
           ]
           "Google".draw(in: CGRect(x: 96, y: 640, width: 832, height: 152), withAttributes: gAttrs)
 
           let aAttrs: [NSAttributedString.Key: Any] = [
               .font: NSFont.systemFont(ofSize: 192, weight: .black),
-              .foregroundColor: NSColor.white,
+              .foregroundColor: NSColor.black,
               .paragraphStyle: pStyle,
               .kern: 5.0
           ]
@@ -122,7 +102,7 @@ jobs:
 
           let sAttrs: [NSAttributedString.Key: Any] = [
               .font: NSFont.systemFont(ofSize: 144, weight: .heavy),
-              .foregroundColor: NSColor(white: 0.90, alpha: 1.0),
+              .foregroundColor: NSColor(white: 0.12, alpha: 1.0),
               .paragraphStyle: pStyle
           ]
           "Studio".draw(in: CGRect(x: 96, y: 232, width: 832, height: 164), withAttributes: sAttrs)
@@ -137,7 +117,7 @@ jobs:
 
           swift make_icns.swift
 
-          # 2. 生成全套 iconset 分辨率
+          # 2. 生成 AppIcon.iconset 分辨率
           mkdir -p AppIcon.iconset
           sips -z 16 16     icon_1024.png --out AppIcon.iconset/icon_16x16.png
           sips -z 32 32     icon_1024.png --out AppIcon.iconset/icon_16x16@2x.png
@@ -152,7 +132,7 @@ jobs:
 
           iconutil -c icns AppIcon.iconset -o "$RESOURCES/AppIcon.icns"
 
-          # 3. 严格写入 Info.plist（指定 AppIcon.icns，去除 CFBundleIconName 冲突）
+          # 3. 写入 Info.plist
           cat <<EOF > "$CONTENTS/Info.plist"
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
