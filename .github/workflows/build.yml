@@ -1,28 +1,23 @@
-name: Build AIStudio Rust for Intel Mac (macOS)
+name: Build AIStudio for Intel Mac (macOS 26)
 
 on:
-  push:
-    branches: [ "main", "master" ]
   workflow_dispatch:
 
 jobs:
   build-macos:
-    runs-on: macos-latest
+    runs-on: macos-26
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup Rust Toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-apple-darwin
-
-      - name: Build Rust Binary for Intel Mac (x86_64-apple-darwin)
+      - name: Build for Intel MacBook Pro 2020 (macOS 26)
         run: |
-          cargo build --release --target x86_64-apple-darwin
+          swift build -c release \
+            --arch x86_64 \
+            -Xswiftc -target -Xswiftc x86_64-apple-macosx26.0
 
-      - name: Package Standalone macOS .app Bundle
+      - name: Package Standalone App Bundle
         run: |
           APP_NAME="AIStudio"
           APP_DIR="$APP_NAME.app"
@@ -35,11 +30,12 @@ jobs:
           mkdir -p "$RESOURCES/zh-Hans.lproj"
           mkdir -p "$RESOURCES/zh_CN.lproj"
 
-          # 拷贝 Rust 编译好的二进制文件
-          cp "target/x86_64-apple-darwin/release/aistudio" "$MACOS/$APP_NAME"
+          # 拷贝编译好的二进制
+          BIN_PATH=$(find .build -name "$APP_NAME" -type f -perm +111 | grep "release" | head -n 1)
+          cp "$BIN_PATH" "$MACOS/$APP_NAME"
           chmod +x "$MACOS/$APP_NAME"
 
-          # 生成纯白底高清 AppIcon.icns
+          # 1. 采用离线位图生成纯白底实心矢量图作为默认物理 AppIcon.icns（确保未打开时是纯白图标）
           cat << 'EOF' > make_icns.swift
           import AppKit
 
@@ -66,18 +62,21 @@ jobs:
           let rect = CGRect(x: 96, y: 96, width: 832, height: 832)
           let squircle = CGPath(roundedRect: rect, cornerWidth: 208, cornerHeight: 208, transform: nil)
 
+          // 拟态阴影
           cg.saveGState()
           cg.setShadow(offset: CGSize(width: 0, height: -24), blur: 50, color: NSColor.black.withAlphaComponent(0.18).cgColor)
           cg.addPath(squircle)
           cg.fillPath()
           cg.restoreGState()
 
+          // 实体纯白底座（确保未打开状态下与 Gemini 保持纯白一致）
           cg.saveGState()
           cg.addPath(squircle)
           cg.clip()
           cg.setFillColor(NSColor.white.cgColor)
           cg.fill(rect)
 
+          // 细微边框
           cg.setLineWidth(3.0)
           cg.setStrokeColor(NSColor.black.withAlphaComponent(0.08).cgColor)
           cg.addPath(squircle)
@@ -118,6 +117,7 @@ jobs:
 
           swift make_icns.swift
 
+          # 2. 生成 AppIcon.iconset 分辨率
           mkdir -p AppIcon.iconset
           sips -z 16 16     icon_1024.png --out AppIcon.iconset/icon_16x16.png
           sips -z 32 32     icon_1024.png --out AppIcon.iconset/icon_16x16@2x.png
@@ -132,7 +132,7 @@ jobs:
 
           iconutil -c icns AppIcon.iconset -o "$RESOURCES/AppIcon.icns"
 
-          # 写入 Info.plist
+          # 3. 写入 Info.plist
           cat <<EOF > "$CONTENTS/Info.plist"
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -141,7 +141,7 @@ jobs:
               <key>CFBundleExecutable</key>
               <string>$APP_NAME</string>
               <key>CFBundleIdentifier</key>
-              <string>com.oupeng.aistudio.rustapp</string>
+              <string>com.oupeng.aistudio.macapp</string>
               <key>CFBundleName</key>
               <string>$APP_NAME</string>
               <key>CFBundlePackageType</key>
@@ -160,7 +160,7 @@ jobs:
                   <string>zh_CN</string>
               </array>
               <key>LSMinimumSystemVersion</key>
-              <string>10.15</string>
+              <string>26.0</string>
               <key>NSHighResolutionCapable</key>
               <true/>
               <key>NSSupportsAutomaticGraphicsSwitching</key>
@@ -170,10 +170,10 @@ jobs:
           EOF
 
           codesign --force --deep --sign - "$APP_DIR"
-          zip -r -y "AIStudio-Rust-macOS-Intel.zip" "$APP_DIR"
+          zip -r -y "AIStudio-macOS26-Intel.zip" "$APP_DIR"
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: AIStudio-Rust-macOS-Intel
-          path: AIStudio-Rust-macOS-Intel.zip
+          name: AIStudio-macOS26-Intel
+          path: AIStudio-macOS26-Intel.zip
