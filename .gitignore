@@ -1,6 +1,0 @@
-target/
-.build/
-*.app
-*.zip
-icon_1024.png
-AppIcon.iconset/
