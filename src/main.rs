@@ -330,7 +330,6 @@ fn main() {
         .with_user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15")
         .with_initialization_script(&combined_script)
         .with_url("https://aistudio.google.com")
-        .expect("Failed to create webview builder")
         .build(&window)
         .expect("Failed to build WKWebView");
 
